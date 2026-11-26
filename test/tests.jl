@@ -16,6 +16,7 @@ try
         include("matmul.jl")
         include("blas.jl")
         include("gett-layout.jl")
+        include("async-copy.jl")
         include("examples.jl")
         include("contraction.jl")
         include("contraction-configs.jl")
