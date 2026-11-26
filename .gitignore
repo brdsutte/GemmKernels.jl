@@ -4,3 +4,4 @@ tuning/.CondaPkg/
 tuning/data-padding.csv
 tuning/data-params-best-configs.csv
 *.ncu-rep
+negative-control/
