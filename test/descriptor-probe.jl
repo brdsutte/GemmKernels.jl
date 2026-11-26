@@ -46,8 +46,8 @@ println("relative error vs. AB alone (C ignored):         ", relerr(D, AB))
 
 println("\n== C is Float32, D is Float16")
 try
-    D = contract(A, C_float32, [1, 2], 1)
-    println("ran; relative error vs. AB + C: ", relerr(D, AB + host(C_float32)))
+    D32 = contract(A, C_float32, [1, 2], 1)
+    println("ran; relative error vs. AB + C: ", relerr(D32, AB + host(C_float32)))
 catch err
     msg = sprint(showerror, err)
     println(typeof(err), ": ", first(msg, 1500))
