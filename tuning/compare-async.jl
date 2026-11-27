@@ -30,11 +30,9 @@ using CUDA, GemmKernels, JSON, Random, Printf, DataFrames
 using Base.Iterators: product
 using Combinatorics: permutations
 
-# GPU time of everything `f` launches, measured with CUDA events. We don't time with
-# CUDA.@profile: with recent CUDA.jl versions, every kernel compiled in the same process
-# after a profiled run fails with "AssertionError: haskey(compiled, job.source)". Events
-# also count the launch overhead (a few microseconds) and any gaps between kernels.
-gpu_time(f) = Float64(CUDA.@elapsed f())
+# Total time of the kernels in a CUDA.@profile result. Older CUDA.jl versions return the
+# device events as a DataFrame, newer ones as a NamedTuple of columns; DataFrame() takes both.
+device_time(prof) = (events = DataFrame(prof.device); sum(events.stop .- events.start))
 
 include(joinpath(@__DIR__, "..", "configs", "configs.jl"))
 
@@ -67,11 +65,17 @@ swizzle_type(str) = startswith(str, "horizontal-") ?
     CTASwizzle.HorizontallyTiled{parse(Int, chopprefix(str, "horizontal-"))} :
     CTASwizzle.VerticallyTiled{parse(Int, chopprefix(str, "vertical-"))}
 
-# execute() launches a single kernel, so this is its time plus a few microseconds of launch
-# latency, the same for every kernel variant.
+# Time the kernels launched by `f` with the CUDA profiler, like tuning/tune.jl. Note: with
+# some recent CUDA.jl versions, every kernel compiled in a process after a profiled run fails
+# with "AssertionError: haskey(compiled, job.source)"; use the package versions of
+# tuning/Manifest.toml from the sweeps (CUDA.jl 5.9.2) to avoid that.
 function measure(f)
     f(); synchronize()  # warm-up
-    minimum(gpu_time(f) for _ in 1:RUNS)
+    times = map(1:RUNS) do _
+        prof = CUDA.@profile concurrent=false f()
+        device_time(prof)
+    end
+    minimum(times)
 end
 
 function run_config(problem, data, reference, params, is_tc)
