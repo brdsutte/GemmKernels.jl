@@ -17,7 +17,7 @@ all_tests = ["tiling.jl", "cta-swizzle.jl", "matmul.jl", "blas.jl", "gett-layout
              "async-copy.jl", "examples.jl", "contraction.jl", "contraction-configs.jl",
              "rowmajor-d.jl", "kernel-cache.jl"]
 new_tests = ["cta-swizzle.jl", "gett-layout.jl", "async-copy.jl", "contraction.jl",
-             "contraction-configs.jl", "rowmajor-d.jl", "kernel-cache.jl"]
+             "contraction-configs.jl", "rowmajor-d.jl", "kernel-cache.jl", "tuning-overrides.jl"]
 test_selection = strip(get(ENV, "GEMMKERNELS_TESTS", ""))
 test_files = if isempty(test_selection)
     all_tests
