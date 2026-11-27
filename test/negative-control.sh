@@ -4,7 +4,7 @@
 # the current branch, which has the working test setup), runs the matching test file,
 # saves the log in negative-control/<name>.log, and restores src/.
 #
-#     bash test/negative-control.sh                    all four
+#     bash test/negative-control.sh                    all of them
 #     bash test/negative-control.sh gett alpha         only the named ones
 #
 # Environment: JULIA_CMD (default "julia +1.11"), JULIA_CPU_THREADS (default 4),
@@ -29,6 +29,7 @@ CASES=(
     "swizzle|7ee2ea4|src/kernel.jl|contraction-configs|pipelined_ng fails with all 4 non-identity swizzles"
     "alpha|4017834|src/tensors/contraction.jl|contraction|the alpha test fails and the tropical test throws a MethodError"
     "defaults|65eb44a|src/tensors/gett.jl|contraction|every contraction with default parameters errors; the 3 descriptor cases fail"
+    "rowmajor|09b5784|src/layout.jl|rowmajor-d|128x64 crashes (illegal address) and 64x128 gives wrong results, for all 3 kernels; 64x64 and the col-major size check pass"
     "descriptors|sed:/^    check_gett_support(desc, β)\$/d|src/tensors/gett.jl|contraction|only the 3 descriptor cases fail, with wrong results (the default-parameter fix stays in place)"
 )
 
