@@ -18,9 +18,12 @@ using Scratch
 using Profile
 using ProfileSVG
 
-# Total time of the kernels in a CUDA.@profile result. Older CUDA.jl versions return the
-# device events as a DataFrame, newer ones as a NamedTuple of columns; DataFrame() takes both.
-device_time(prof) = (events = DataFrame(prof.device); sum(events.stop .- events.start))
+# GPU time of everything `f` launches, measured with CUDA events. We don't time with
+# CUDA.@profile: with recent CUDA.jl versions, every kernel compiled in the same process
+# after a profiled run fails with "AssertionError: haskey(compiled, job.source)", and the
+# measuring workers compile a new configuration after every measurement. Events also count
+# the launch overhead (a few microseconds) and any gaps between kernels.
+gpu_time(f) = Float64(CUDA.@elapsed f())
 
 if myid() == 1
     using Plots
@@ -322,8 +325,7 @@ function measure_config(problem, config, max_time)
     # first measurement: check if the configuration is even worth measuring
     measurements = Float64[]
     measuring = @elapsed begin
-        prof = CUDA.@profile concurrent=false execute(problem, data...; args...)
-        cur_time = device_time(prof)
+        cur_time = gpu_time(() -> execute(problem, data...; args...))
     end
     push!(measurements, cur_time)
     if cur_time > max_time
@@ -338,10 +340,9 @@ function measure_config(problem, config, max_time)
     initializing = @elapsed CUDA.@sync initialize_data(problem, data...; params...)
     settling += @elapsed wait_if_throttling()
     measuring += @elapsed begin
-        prof = CUDA.@profile concurrent=false begin
+        cur_time = gpu_time() do
             result = execute(problem, data...; args...)
         end
-        cur_time = device_time(prof)
         push!(measurements, cur_time)
     end
     copying = @elapsed begin
@@ -353,8 +354,7 @@ function measure_config(problem, config, max_time)
     # subsequent measurements: keep going until time doesn't improve
     measuring += @elapsed begin
         while need_more_measurements(measurements)
-            prof = CUDA.@profile concurrent=false execute(problem, data...; args...)
-            cur_time = device_time(prof)
+            cur_time = gpu_time(() -> execute(problem, data...; args...))
             push!(measurements, cur_time)
         end
     end
@@ -438,8 +438,7 @@ function benchmark_configs(all_configs)
                 wait_if_throttling()
 
                 for i in 1:BENCHMARK_SAMPLES
-                    prof = CUDA.@profile concurrent=false execute_baseline(problem, data...; args...)
-                    cur_time = device_time(prof)
+                    cur_time = gpu_time(() -> execute_baseline(problem, data...; args...))
                     push!(baseline_times, cur_time)
                     next!(p)
                 end
@@ -457,8 +456,7 @@ function benchmark_configs(all_configs)
 
             times = []
             for i in 1:BENCHMARK_SAMPLES
-                prof = CUDA.@profile concurrent=false execute(problem, data...; args...)
-                cur_time = device_time(prof)
+                cur_time = gpu_time(() -> execute(problem, data...; args...))
                 push!(times, cur_time)
                 next!(p)
             end
@@ -598,25 +596,39 @@ function main()
                 # measure
                 measurements = []
                 while need_more_measurements(measurements)
-                    prof = CUDA.@profile concurrent=false execute_baseline(problem, data...; args...)
-                    cur_time = device_time(prof)
+                    cur_time = gpu_time(() -> execute_baseline(problem, data...; args...))
                     push!(measurements, cur_time)
                 end
-
-                prof = CUDA.@profile concurrent=false execute_baseline(problem, data...; args...)
-                baseline_data["$problem"] = Dict(
-                    "times" => measurements,
-                    "kernels" => prof.device.name,
-                )
 
                 for arr in data
                     CUDA.unsafe_free!(arr)
                 end
 
-                minimum(measurements)
+                measurements
             end
+            baseline_data["$problem"] = Dict{String, Any}("times" => baseline_performances[problem])
+            baseline_performances[problem] = minimum(baseline_performances[problem])
             @assert isfile(path)
             reference_results[problem] = path
+        end
+
+        # Record which kernels cuTENSOR launches, with the profiler. This comes last, because
+        # nothing may be compiled in this process after a profiled run (see gpu_time); and it
+        # is only informative, so a failure doesn't stop the sweep.
+        for problem in problems
+            try
+                baseline_data["$problem"]["kernels"] = remotecall_fetch(worker) do
+                    data = allocate_data(problem)
+                    args = prepare_baseline(problem, data...)
+                    execute_baseline(problem, data...; args...)
+                    prof = CUDA.@profile concurrent=false execute_baseline(problem, data...; args...)
+                    names = collect(prof.device.name)
+                    foreach(CUDA.unsafe_free!, data)
+                    names
+                end
+            catch err
+                @warn "Could not record cuTENSOR's kernels for $problem: $(sprint(Base.showerror, err))"
+            end
         end
         try
             rmprocs(worker; waitfor=30)
@@ -653,6 +665,22 @@ function main()
         Arrow.write("configs.arrow", df)
         mv(old_config_path, "$(old_config_path).old")
     end
+    ## results of earlier runs become stale when GemmKernels changes: e.g. a configuration
+    ## that failed because of a since-fixed bug would never be tried again. Remember the
+    ## code version (the module build id changes whenever GemmKernels or a dependency is
+    ## recompiled), and start a new sweep when it differs, unless GK_KEEP_CONFIGS=1.
+    code_version = string(Base.module_build_id(GemmKernels))
+    version_path = "$(config_path).version"
+    if isfile(config_path) && get(ENV, "GK_KEEP_CONFIGS", "0") != "1" &&
+       (!isfile(version_path) || readchomp(version_path) != code_version)
+        stale_path = "$(config_path).stale-$(Dates.format(now(), "yyyymmddHHMM"))"
+        @warn "$config_path was produced by another version of GemmKernels; moving it to $stale_path and starting a new sweep (set GK_KEEP_CONFIGS=1 to keep it)"
+        mv(config_path, stale_path)
+        # the best configurations benchmarked for the plots came from those results too
+        best_path = joinpath(@__DIR__, "best-configs.bin")
+        isfile(best_path) && mv(best_path, "$(best_path).stale-$(Dates.format(now(), "yyyymmddHHMM"))")
+    end
+    write(version_path, code_version)
     ## load the new format
     all_configs = create_configs()
     if isfile(config_path)
