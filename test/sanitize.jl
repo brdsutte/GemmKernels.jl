@@ -92,7 +92,17 @@ for (kname, kernel) in kernels(; async = false), (BM, BN) in [(128, 64), (64, 12
                 PERM_M = [1, 2], PERM_N = [3], PERM_K = [4], cta_swizzle = CTASwizzle.Identity))
 end
 
-# 4. CTA swizzles with partial strips (test/contraction-configs.jl).
+# 4. The async kernels with a strided A, which they copy through registers (B with cp.async).
+for (kname, kernel) in kernels(), _ in 1:1
+    startswith(kname, "async") || continue
+    run_case("async with A through registers, $kname", small_tc(), true,
+             (; BLOCK_M = 128, BLOCK_N = 16, BLOCK_K = 32, WARPS_M = 2, WARPS_N = 1,
+                OP_M = 32, OP_N = 8, OP_K = 16, kernel,
+                is_A_col_major = true, is_B_col_major = true, is_D_col_major = true,
+                PERM_M = [1, 2], PERM_N = [3], PERM_K = [4], cta_swizzle = CTASwizzle.Identity))
+end
+
+# 5. CTA swizzles with partial strips (test/contraction-configs.jl).
 for (kname, kernel) in kernels(), swizzle in [CTASwizzle.HorizontallyTiled{4}, CTASwizzle.VerticallyTiled{4}]
     run_case("swizzle $(swizzle), $kname", small_tc(), true,
              (; BLOCK_M = 128, BLOCK_N = 16, BLOCK_K = 32, WARPS_M = 2, WARPS_N = 1,
