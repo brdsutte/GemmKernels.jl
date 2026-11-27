@@ -5,9 +5,11 @@ using DataFrames
 using Printf
 using Statistics
 
-# Total time of the kernels in a CUDA.@profile result. Older CUDA.jl versions return the
-# device events as a DataFrame, newer ones as a NamedTuple of columns; DataFrame() takes both.
-device_time(prof) = (events = DataFrame(prof.device); sum(events.stop .- events.start))
+# GPU time of everything `f` launches, measured with CUDA events. We don't time with
+# CUDA.@profile: with recent CUDA.jl versions, every kernel compiled in the same process
+# after a profiled run fails with "AssertionError: haskey(compiled, job.source)". Events
+# also count the launch overhead (a few microseconds) and any gaps between kernels.
+gpu_time(f) = Float64(CUDA.@elapsed f())
 
 const BENCHMARK_SAMPLES = 10
 
@@ -37,8 +39,7 @@ function benchmark_cutensor(problem; elementwise_op)
     wait_if_throttling()
 
     for i in 1:BENCHMARK_SAMPLES
-        prof = CUDA.@profile concurrent=false execute_baseline(problem, data...; args..., elementwise_op)
-        cur_time = device_time(prof)
+        cur_time = gpu_time(() -> execute_baseline(problem, data...; args..., elementwise_op))
         push!(times, cur_time)
     end
 
@@ -57,8 +58,7 @@ function benchmark_gemmkernels(problem, config; elementwise_op)
     wait_if_throttling()
 
     for i in 1:BENCHMARK_SAMPLES
-        prof = CUDA.@profile concurrent=false execute(problem, data...; args...)
-        cur_time = device_time(prof)
+        cur_time = gpu_time(() -> execute(problem, data...; args...))
         push!(times, cur_time)
     end
 
