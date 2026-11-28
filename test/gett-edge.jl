@@ -4,7 +4,7 @@ using GemmKernels.Tensors.GETTLayout
 
 isdefined(@__MODULE__, :Configs) || include("../configs/configs.jl")
 
-# Partial edge tiles (createGETTLayout's `bounds`, the configs' EDGE = "mask"): M and N need
+# Partial edge tiles (createGETTLayout's `bounds`, the configs' EDGE = "partial"): M and N need
 # not be multiples of the block shape; the layouts skip the stores of the tiles beyond them,
 # and clamp their loads to the last tile within them.
 
@@ -52,7 +52,7 @@ isdefined(@__MODULE__, :Configs) || include("../configs/configs.jl")
         end
 
         @testcase "$name, $kernel, $edge, indexing = $indexing" for (name, extents, (BM, BN, BK), PERM_M, PERM_N, PERM_K, a_col, b_col) in contractions,
-                                                                   kernel in kernels, edge in ["pad", "mask"],
+                                                                   kernel in kernels, edge in ["pad", "partial"],
                                                                    indexing in ["default", "lean32"]
             problem = WMMATensorContraction(; name, extents, data_type = Float16, compute_type = Float16,
                                               accumulate_type = Float32, zero_c = true)
@@ -73,7 +73,7 @@ isdefined(@__MODULE__, :Configs) || include("../configs/configs.jl")
                             OP_M = 16, OP_N = 16, OP_K = 16, kernel = Kernel.matmul_singlestage,
                             is_A_col_major = true, is_B_col_major = true, is_D_col_major = true,
                             PERM_M = [1], PERM_N = [2], PERM_K = [3], cta_swizzle = CTASwizzle.Identity,
-                            EDGE = "mask", SPLIT_K = split)
+                            EDGE = "partial", SPLIT_K = split)
                 @test run_contraction(problem, params)
             end
         end
@@ -87,7 +87,7 @@ isdefined(@__MODULE__, :Configs) || include("../configs/configs.jl")
                         OP_M = 16, OP_N = 16, OP_K = 16, kernel = Kernel.matmul_singlestage,
                         is_A_col_major = true, is_B_col_major = true, is_D_col_major = true,
                         PERM_M = [1], PERM_N = [2], PERM_K = [3], cta_swizzle = CTASwizzle.Identity,
-                        EDGE = "mask")
+                        EDGE = "partial")
             data = allocate_data(problem)
             @test_throws GemmKernels.ConfigError try
                 prepare(problem, data...; params...)
