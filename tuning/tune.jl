@@ -111,6 +111,12 @@ const FILTER = get(ENV, "GK_FILTER", "profiler")
 FILTER in ("profiler", "events", "check") || error("GK_FILTER must be profiler, events or check, not $FILTER")
 const FILTER_FACTOR = parse(Float64, get(ENV, "GK_FILTER_FACTOR", "1.5"))
 
+# Which measured configurations are verified (GK_VERIFY): "measured" (the default, as before:
+# those measured in full) or "all" (also those found slow, which costs one more run and a
+# copy each), e.g. for a sweep that doubles as a correctness test of the kernels and options.
+const VERIFY = get(ENV, "GK_VERIFY", "measured")
+VERIFY in ("measured", "all") || error("GK_VERIFY must be measured or all, not $VERIFY")
+
 # The time limit for each single step (preparation, measurement, verification), in seconds.
 const CONFIG_TIME_LIMIT = 60
 
@@ -322,7 +328,7 @@ function prepare_config(problem, config, fake=false)
 end
 
 # take time measurements
-function measure_config(problem, config, max_time, filter = "profiler")
+function measure_config(problem, config, max_time, filter = "profiler", verify_all = false)
     @info "Measuring $(repr_row(config))"
     state = prepared_state[]
     @assert state !== nothing
@@ -362,6 +368,13 @@ function measure_config(problem, config, max_time, filter = "profiler")
         synchronize()
     end
 
+    # a result to verify, for a configuration found slow (GK_VERIFY=all)
+    function slow_result()
+        verify_all || return nothing
+        CUDA.@sync initialize_data(problem, data...; params...)
+        adapt(Array, execute(problem, data...; args...))
+    end
+
     # first measurement: check if the configuration is even worth measuring
     measurements = Float64[]
     event_time = nothing
@@ -377,7 +390,7 @@ function measure_config(problem, config, max_time, filter = "profiler")
     if filter == "events"
         if event_time > max_time
             @info "Configuration is too slow: $(prettytime(event_time)) (events) > $(prettytime(max_time))"
-            return "slow", [event_time], nothing, (; filtering)
+            return "slow", [event_time], slow_result(), (; filtering)
         end
     else
         measuring = @elapsed begin
@@ -389,7 +402,7 @@ function measure_config(problem, config, max_time, filter = "profiler")
             @info "Configuration is too slow"
             event_time === nothing ||
                 @info "Filter check: events $(event_time) s, profiler $(cur_time) s, ratio $(event_time / cur_time) (slow, one profiler measurement)"
-            return "slow", measurements, nothing, (; filtering, measuring)
+            return "slow", measurements, slow_result(), (; filtering, measuring)
         end
     end
 
@@ -1149,7 +1162,7 @@ function main()
                                 max_time = 3 * target_time
                                 FILTER == "events" && (max_time = min(max_time, FILTER_FACTOR * best_time))
                                 measuring, (status, measurements, result, times) = @something(
-                                    remotecall_until(measure_config, worker, problem, NamedTuple(config), max_time, FILTER),
+                                    remotecall_until(measure_config, worker, problem, NamedTuple(config), max_time, FILTER, VERIFY == "all"),
                                     error("Time-out measuring configuration")
                                 )
                                 worker_elapsed += measuring
@@ -1160,12 +1173,12 @@ function main()
                                 config.time = minimum(measurements; init=Inf)
                                 wait_t1 = time(); note_time(measurement_times_master, :wait_for_worker_measuring, wait_t1 - wait_t0); wait_t0 = wait_t1
 
-                                if status != "success"
+                                if status != "success" && !(status == "slow" && result !== nothing)
                                     config.status = status
                                     continue
                                 end
 
-                                # verify results
+                                # verify results (with GK_VERIFY=all also of slow configurations)
                                 verifying, verified = @something(
                                     remotecall_until(verify, worker, problem, reference_result, result),
                                     error("Time-out verifying results")
@@ -1178,7 +1191,7 @@ function main()
                                     continue
                                 end
 
-                                config.status = "success"
+                                config.status = status
                             catch err
                                 config.status = "crashed_during_measure"
                                 log = sprint(Base.showerror, err) * sprint(Base.show_backtrace, catch_backtrace())
