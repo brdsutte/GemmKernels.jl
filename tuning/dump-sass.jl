@@ -7,7 +7,9 @@
 #   julia +1.11 --project=tuning tuning/dump-sass.jl <thesis configs.arrow> [TCs] [out dir]
 #
 # TCs defaults to 12,20,22,24; out dir to sass/. Writes tc<N>-<indexing>.sass per
-# configuration.
+# configuration, and prints its registers per thread and local memory (spills). With
+# GK_DUMP_EDGE=pad,mask, each is dumped with padding and with partial edge tiles
+# (tc<N>-<indexing>-<edge>.sass).
 
 using CUDA, GemmKernels, DataFrames
 import Arrow
@@ -15,6 +17,7 @@ import Arrow
 const CONFIGS = ARGS[1]
 const TCS = parse.(Int, split(get(ARGS, 2, "12,20,22,24"), ','))
 const OUT = get(ARGS, 3, "sass")
+const EDGES = filter(!isempty, String.(strip.(split(get(ENV, "GK_DUMP_EDGE", ""), ','))))
 include(joinpath(@__DIR__, "wmma-contraction.jl"))
 
 function nvdisasm()
@@ -48,7 +51,14 @@ function dump(problem, config, prefix)
         read(`$tool -c $prefix.cubin`, String)
     end
     write("$prefix.sass", sass)
-    println("  $prefix: $(count(l -> occursin(r"^\s+[A-Z@]", l), split(sass, '\n'))) lines of SASS")
+    resources = try
+        fun = CUDA.link(plan.job, plan.compiled)
+        attrs = CUDA.attributes(fun)
+        ", $(attrs[CUDA.FUNC_ATTRIBUTE_NUM_REGS]) registers, $(attrs[CUDA.FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES]) bytes of local memory"
+    catch err
+        ", registers unknown ($(sprint(showerror, err)))"
+    end
+    println("  $prefix: $(count(l -> occursin(r"^\s+[A-Z@]", l), split(sass, '\n'))) lines of SASS$resources")
     foreach(CUDA.unsafe_free!, data)
 end
 
@@ -62,8 +72,10 @@ for tc in TCS
     nrow(sel) == 1 || (@warn "TC$tc: $(nrow(sel)) configurations; skipped"; continue)
     thesis = NamedTuple(first(sel))
     println("TC$tc: $(repr_row(thesis))")
-    for indexing in ("default", "lean32")
-        dump(problem, merge(thesis, (; INDEXING = indexing)), joinpath(OUT, "tc$tc-$indexing"))
+    for indexing in ("default", "lean32"), edge in (isempty(EDGES) ? [nothing] : EDGES)
+        variant = merge(thesis, (; INDEXING = indexing))
+        edge === nothing || (variant = merge(variant, (; EDGE = edge)))
+        dump(problem, variant, joinpath(OUT, edge === nothing ? "tc$tc-$indexing" : "tc$tc-$indexing-$edge"))
     end
 end
 println("written to $OUT/")

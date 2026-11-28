@@ -15,7 +15,9 @@
 # correct; profile-best-manifest.csv keeps the same information.
 #
 # With GK_PROFILE_INDEXING=default,lean32, each contraction's configuration is profiled once
-# per address arithmetic of the GETT layouts, in ranges "TC<n> ours default" etc.
+# per address arithmetic of the GETT layouts, in ranges "TC<n> ours default" etc. Likewise
+# GK_PROFILE_EDGE=pad,mask profiles it with padding and with partial edge tiles; with both,
+# every combination is profiled ("TC<n> ours lean32 mask" etc.).
 #
 # Nsight Compute locks the clocks to the base clock by default (--clock-control base), so
 # the kernel durations it reports are not those of the tuner.
@@ -39,6 +41,7 @@ function best_config(configs, name)
 end
 
 const INDEXINGS = filter(!isempty, String.(strip.(split(get(ENV, "GK_PROFILE_INDEXING", ""), ','))))
+const EDGES = filter(!isempty, String.(strip.(split(get(ENV, "GK_PROFILE_EDGE", ""), ','))))
 
 function profile_tc(tc, problem, config)
     data = allocate_data(problem)
@@ -50,8 +53,11 @@ function profile_tc(tc, problem, config)
 
     # each variant: compile, warm up and verify outside the profiled range, then profile
     valid = true
-    for indexing in (isempty(INDEXINGS) ? [nothing] : INDEXINGS)
-        variant = indexing === nothing ? config : merge(config, (; INDEXING = indexing))
+    for indexing in (isempty(INDEXINGS) ? [nothing] : INDEXINGS),
+        edge in (isempty(EDGES) ? [nothing] : EDGES)
+        variant = config
+        indexing === nothing || (variant = merge(variant, (; INDEXING = indexing)))
+        edge === nothing || (variant = merge(variant, (; EDGE = edge)))
         params = create_params(variant)
         args = try
             prepare(problem, data...; params...)
@@ -61,7 +67,7 @@ function profile_tc(tc, problem, config)
         initialize_data(problem, data...; params...)
         valid &= verify(problem, reference, adapt(Array, execute(problem, data...; args...)))
         synchronize()
-        label = indexing === nothing ? "TC$tc ours" : "TC$tc ours $indexing"
+        label = join(filter(!isnothing, ["TC$tc ours", indexing, edge]), ' ')
         CUDA.@profile external=true NVTX.@range label execute(problem, data...; args...)
     end
     CUDA.@profile external=true NVTX.@range "TC$tc cutensor" execute_baseline(problem, data...; baseline_args...)
