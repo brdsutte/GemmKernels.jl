@@ -368,8 +368,9 @@ end
 @inline Layout.fragtype(::Type{GETTLayoutMasked{T, L, bound1, bound2}}, tile_size::NamedTuple) where {T, L, bound1, bound2} =
     Layout.fragtype(L, tile_size)
 
-# Asynchronous copies: the tiles beyond the edge are zero-filled by cp.async itself (a source
-# size of 0 bytes), from the workspace's first element as a valid dummy address.
+# Asynchronous copies: the tiles within the edges are copied with cp.async, and those beyond
+# them get zeros with a plain store to shared memory, which the asynchronous-copy kernel
+# allows (see its copy_tile: the stage buffer is only read after a later barrier).
 Layout.contiguous_tiles(::Type{GETTLayoutMasked{T, L, bound1, bound2}}) where {T, L, bound1, bound2} =
     Layout.contiguous_tiles(L)
 
@@ -377,13 +378,13 @@ Base.@propagate_inbounds @inline function Layout.copy_async!(
         M::Type{GETTLayoutMasked{T, L, bound1, bound2}}, shared_layout,
         shared_workspace, global_workspace, shared_tile::Tile{size}, global_tile::Tile
     ) where {T, L, bound1, bound2, size}
-    Bytes = sizeof(T) * size[1] * size[2]
-    dst = Layout.tile_pointer(shared_layout, shared_workspace, shared_tile)
     if in_bounds(M, global_tile)
-        Layout.cp_async!(dst, Layout.tile_pointer(L, global_workspace, global_tile), Val(Bytes))
+        Layout.copy_async!(L, shared_layout, shared_workspace, global_workspace, shared_tile, global_tile)
     else
-        Layout.cp_async_zfill!(dst, pointer(global_workspace), Val(Bytes))
+        zeros = ntuple(_ -> VecElement{T}(zero(T)), Val(size[1] * size[2]))
+        Layout.store!(shared_layout, shared_workspace, zeros, shared_tile)
     end
+    return
 end
 
 # The address arithmetic of the GETT layouts (see GETTLayoutLean):

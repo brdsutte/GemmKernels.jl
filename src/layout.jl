@@ -446,22 +446,6 @@ end
     end
 end
 
-# The same copy with a source size of 0 bytes: writes Bytes zeros to `dst` without reading
-# `src` (which must still be a valid global address), for tiles beyond the edge of a tensor.
-@inline @generated function cp_async_zfill!(dst::Core.LLVMPtr{T, AS.Shared}, src::Core.LLVMPtr{T, AS.Global},
-                                            ::Val{Bytes}) where {T, Bytes}
-    Bytes in (4, 8, 16) || return :(error("cp.async can only copy 4, 8 or 16 bytes, not ", $Bytes))
-    intr = Bytes == 16 ? "llvm.nvvm.cp.async.cg.shared.global.16.s" :
-                         "llvm.nvvm.cp.async.ca.shared.global.$(Bytes).s"
-    quote
-        $(Expr(:meta, :inline))
-        ccall($intr, llvmcall, Cvoid,
-              (Core.LLVMPtr{UInt8, AS.Shared}, Core.LLVMPtr{UInt8, AS.Global}, Int32),
-              reinterpret(Core.LLVMPtr{UInt8, AS.Shared}, dst),
-              reinterpret(Core.LLVMPtr{UInt8, AS.Global}, src), Int32(0))
-    end
-end
-
 @inline cp_async_commit() = ccall("llvm.nvvm.cp.async.commit.group", llvmcall, Cvoid, ())
 
 # cp.async.wait_group takes an immediate operand, so N must be a compile-time constant.
