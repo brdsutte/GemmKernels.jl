@@ -96,3 +96,27 @@ in increasing order of that estimate. The estimate is the time of the busiest SM
    against blind spots of the model.
 4. When the model's list (at most 200,000 configurations) is exhausted, the tuner continues
    in random order (configurations already tried are skipped, as before).
+
+## Revisions
+
+The rules above (revision 0) were committed before any sweep results were looked at.
+
+**Revision 1**, after inspecting the model's own order (no measurements involved), before any
+GPU run with it: with tile shapes as the only groups in step 2, the first 200 configurations
+of TC1 and TC13 still covered just 3-4 block shapes, because the model barely tells warp and
+operator shapes apart. Step 2 now counts earlier candidates at three levels (the same block
+shape, the same tile shape, the same tile shape and kernel), 3% for each: the first 200
+configurations then cover 22-23 block shapes and 170-200 tile shapes. `GK_MODEL_GROUP=tile`
+restores revision 0.
+
+## Evaluation
+
+1. **Replay** (`tuning/replay-order.jl`) against earlier random sweeps on the RTX 6000 Ada
+   (old kernels only: singlestage, pipelined, pipelined_ng; default indexing, padding): both
+   orders are restricted to the configurations the sweep tried, and the budget counts compiled
+   or measured configurations. This compares the orders on a sparse, uniform sample of the
+   space; it cannot judge the very top of the model's order in the full space (e.g. how
+   diverse it is), nor the new kernels and options.
+2. **GPU runs** (`tuning/compare-orders.sh`, `tuning/compare-orders.jl`): every held-out TC is
+   tuned once per strategy with the same time budget, in alternating order, with the full,
+   current search space; the measure is the best time found after a given time.

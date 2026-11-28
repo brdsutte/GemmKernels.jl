@@ -80,12 +80,19 @@ isinteractive() || include("wmma-contraction.jl")
 
 ############################################################################################
 
-# Whether we stop after beating the baseline, or continue until we've tested every config.
-const EXHAUSTIVE = false
+# Whether we stop after beating the baseline, or continue until we've tested every config
+# (or reached the time limit). GK_EXHAUSTIVE=1 continues, e.g. to compare search orders.
+const EXHAUSTIVE = get(ENV, "GK_EXHAUSTIVE", "0") == "1"
 
 # The time limit for the entire sweep, in seconds.
 # This will be used to determine a per-problem time limit.
 const SWEEP_TIME_LIMIT = 24*3600
+
+# GK_PROBLEM_TIME_LIMIT (seconds), if set, gives every problem the same time limit instead,
+# e.g. to compare search orders with equal budgets.
+const PROBLEM_TIME_LIMIT = let v = strip(get(ENV, "GK_PROBLEM_TIME_LIMIT", ""))
+    isempty(v) ? nothing : parse(Float64, v)
+end
 
 # The time limit for each single step (preparation, measurement, verification), in seconds.
 const CONFIG_TIME_LIMIT = 60
@@ -669,7 +676,8 @@ function main()
     end
 
     # Load previous results from disk
-    config_path = joinpath(@__DIR__, "configs.arrow")
+    # GK_CONFIGS: another file for the results, e.g. one per search order when comparing them
+    config_path = abspath(get(ENV, "GK_CONFIGS", joinpath(@__DIR__, "configs.arrow")))
     ## transition from Serialization to Arrow
     old_config_path = joinpath(@__DIR__, "configs.bin")
     if isfile(old_config_path) && !isfile(config_path)
@@ -790,11 +798,15 @@ function main()
     total_weight = sum(values(weights))
     time_limits = Dict()
     for problem in problems
-        time_limits[problem] = SWEEP_TIME_LIMIT * weights[problem] / total_weight
+        time_limits[problem] = PROBLEM_TIME_LIMIT === nothing ?
+                               SWEEP_TIME_LIMIT * weights[problem] / total_weight : PROBLEM_TIME_LIMIT
     end
 
     # For precheck_config: the shared memory a kernel can use on this GPU.
     max_shmem = attribute(device(), CUDA.DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN)
+
+    # The model-guided search order needs the GPU's properties, which it can only query now.
+    STRATEGY == "model" && model_gpu()
 
     # Get rid of the CUDA context on the master process
     # NOTE: don't use CUDA API's after this point!
@@ -1358,6 +1370,13 @@ function main()
         end
     end
 
+
+    # GK_SWEEP_ONLY=1: stop after the sweep, e.g. when comparing search orders (phase 3 would
+    # benchmark the best configurations for plots, into files shared by all runs)
+    if get(ENV, "GK_SWEEP_ONLY", "0") == "1"
+        @info "GK_SWEEP_ONLY=1: skipping phase 3"
+        return
+    end
 
     #
     # Phase 3: Process results

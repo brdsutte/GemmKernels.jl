@@ -235,6 +235,55 @@ end
 
 swizzle_factor(str) = (n = parse(Int, last(split(str, '-'))); 1 + 0.005 * log2(n))
 
+# the estimated time of a structure with a layout (Inf if the layout is invalid)
+function layout_estimate(s::Structure, p::Problem, gpu::GPUInfo, padded, a_col, b_col, d_col, pM, pN, pK)
+    D, A, B = p.modes
+    BM, BN, BK = s.BM, s.BN, s.BK
+    warps = s.WM * s.WN
+    nA = min(8, BM * BK ÷ (32 * warps)); nB = min(8, BK * BN ÷ (32 * warps)); nC = min(8, BM * BN ÷ (32 * warps))
+    partial = s.edge == "partial"
+    Mtot = prod(padded[p.Mmodes]); Ntot = prod(padded[p.Nmodes])
+    # A: (M, K); B: (K, N); D: (M, N)
+    tA = adjacent(nA, BM, BK, a_col); wA = adjacent(32 * nA, BM, BK, a_col)
+    effA, okA = a_col ? copy_efficiency(positions(A, pM), padded, p.extents, tA[1], wA[1], partial) :
+                        copy_efficiency(positions(A, pK), padded, p.extents, tA[2], wA[2], partial)
+    okA || return Inf
+    tB = adjacent(nB, BK, BN, b_col); wB = adjacent(32 * nB, BK, BN, b_col)
+    effB, okB = b_col ? copy_efficiency(positions(B, pK), padded, p.extents, tB[1], wB[1], partial) :
+                        copy_efficiency(positions(B, pN), padded, p.extents, tB[2], wB[2], partial)
+    okB || return Inf
+    tD = adjacent(nC, BM, BN, d_col); wD = adjacent(32 * nC, BM, BN, d_col)
+    effD, okD = d_col ? copy_efficiency(positions(D, pM), padded, p.extents, tD[1], wD[1], partial) :
+                        copy_efficiency(positions(D, pN), padded, p.extents, tD[2], wD[2], partial)
+    okD || return Inf
+    # partial edge tiles: M and N must be multiples of the copy tiles
+    if partial
+        (Mtot % tA[1] == 0 && Ntot % tB[2] == 0 && Mtot % tD[1] == 0 && Ntot % tD[2] == 0) || return Inf
+    end
+
+    estimate(s, p, gpu, padded, effA, effB, effD)
+end
+
+"""
+    score(config; gpu = ada_6000)
+
+The model's estimate for one configuration (a NamedTuple or row with the tuner's fields; missing
+SPLIT_K, INDEXING and EDGE default to 1, "default" and "pad"), including the swizzle; Inf if the
+model considers it invalid.
+"""
+function score(c; gpu::GPUInfo = ada_6000, problem = Problem(c.name, collect(c.extents)))
+    p = problem
+    get_(f, d) = hasproperty(c, f) ? getproperty(c, f) : d
+    edge = get_(:EDGE, "pad")
+    s = Structure(c.BLOCK_M, c.BLOCK_N, c.BLOCK_K, c.WARPS_M, c.WARPS_N, c.OP_M, c.OP_N, c.OP_K,
+                  c.kernel_str, get_(:SPLIT_K, 1), get_(:INDEXING, "default"), edge)
+    padded = pad_extents(p.extents, p.modes, edge == "partial" ? (M = 1, N = 1, K = s.BK) : (M = s.BM, N = s.BN, K = s.BK))
+    structure_valid(s, p, gpu, padded) || return Inf
+    t = layout_estimate(s, p, gpu, padded, c.is_A_col_major, c.is_B_col_major, c.is_D_col_major,
+                        collect(c.PERM_M), collect(c.PERM_N), collect(c.PERM_K))
+    t * swizzle_factor(c.cta_swizzle_str)
+end
+
 # ------------------------------------------------------------------------------------------
 # The order
 
@@ -274,35 +323,12 @@ function ordered_candidates(name, extents; kernels, split_k_values, indexing_val
         end
         structure_valid(s, p, gpu, padded) || continue
 
-        warps = WM * WN
-        nA = min(8, BM * BK ÷ (32 * warps)); nB = min(8, BK * BN ÷ (32 * warps)); nC = min(8, BM * BN ÷ (32 * warps))
-        partial = edge == "partial"
-        Mtot = prod(padded[p.Mmodes]); Ntot = prod(padded[p.Nmodes])
-
         # the layouts: estimate each, keep the best few
         best = Tuple{Float64, Tuple}[]
         for a_col in (false, true), b_col in (false, true), d_col in (false, true),
             pM in perms_M, pN in perms_N, pK in perms_K
 
-            # A: (M, K); B: (K, N); D: (M, N)
-            tA = adjacent(nA, BM, BK, a_col); wA = adjacent(32 * nA, BM, BK, a_col)
-            effA, okA = a_col ? copy_efficiency(positions(A, pM), padded, p.extents, tA[1], wA[1], partial) :
-                                copy_efficiency(positions(A, pK), padded, p.extents, tA[2], wA[2], partial)
-            okA || continue
-            tB = adjacent(nB, BK, BN, b_col); wB = adjacent(32 * nB, BK, BN, b_col)
-            effB, okB = b_col ? copy_efficiency(positions(B, pK), padded, p.extents, tB[1], wB[1], partial) :
-                                copy_efficiency(positions(B, pN), padded, p.extents, tB[2], wB[2], partial)
-            okB || continue
-            tD = adjacent(nC, BM, BN, d_col); wD = adjacent(32 * nC, BM, BN, d_col)
-            effD, okD = d_col ? copy_efficiency(positions(D, pM), padded, p.extents, tD[1], wD[1], partial) :
-                                copy_efficiency(positions(D, pN), padded, p.extents, tD[2], wD[2], partial)
-            okD || continue
-            # partial edge tiles: M and N must be multiples of the copy tiles
-            if partial
-                (Mtot % tA[1] == 0 && Ntot % tB[2] == 0 && Mtot % tD[1] == 0 && Ntot % tD[2] == 0) || continue
-            end
-
-            t = estimate(s, p, gpu, padded, effA, effB, effD)
+            t = layout_estimate(s, p, gpu, padded, a_col, b_col, d_col, pM, pN, pK)
             isfinite(t) || continue
             push!(best, (t, (a_col, b_col, d_col, pM, pN, pK)))
         end
@@ -334,24 +360,58 @@ end
 # visits the most promising tile shapes first and comes back to their variants later.
 const REPEAT_PENALTY = 0.03
 
+#
+# Revision 1 (after inspecting the model's own order, before any measurement with it): with
+# only tile shapes as groups, the first 200 configurations of TC1 and TC13 covered just 3-4
+# block shapes, as the model barely tells warp and operator shapes apart (a replay against a
+# sparse sample of the space cannot show this). So the penalty now counts earlier candidates
+# at three levels: of the same block shape (BM, BN, BK), of the same tile shape (block shape,
+# warps, operator shape) and of the same tile shape and kernel, 3% for each. The order thus
+# spreads over block shapes first, then over their tile shapes and kernels.
+# GK_MODEL_GROUP=tile restores revision 0.
+const GROUPING = get(ENV, "GK_MODEL_GROUP", "levels")
+GROUPING in ("levels", "tile") || error("GK_MODEL_GROUP must be levels or tile, not $GROUPING")
+
+block_of(c) = (c.BLOCK_M, c.BLOCK_N, c.BLOCK_K)
 group_of(c) = (c.BLOCK_M, c.BLOCK_N, c.BLOCK_K, c.WARPS_M, c.WARPS_N, c.OP_M, c.OP_N, c.OP_K)
+kernel_group_of(c) = (group_of(c)..., c.kernel_str)
 
 function diversify(candidates, limit)
     sort!(candidates; by = first)
+    leaf = GROUPING == "tile" ? group_of : kernel_group_of
     groups = Dict{Any, Vector{Int}}()
     for (i, (_, c)) in enumerate(candidates)
-        push!(get!(groups, group_of(c), Int[]), i)
+        push!(get!(groups, leaf(c), Int[]), i)
     end
-    # a heap of (penalised estimate, group, position within the group)
-    heap = [(candidates[idx[1]][1], g, 1) for (g, idx) in groups]
+    # how many candidates have been taken, per group at each level
+    taken = Dict{Any, Int}()
+    count(key) = get(taken, key, 0)
+    function penalty(c)
+        GROUPING == "tile" && return count(group_of(c))
+        count(block_of(c)) + count(group_of(c)) + count(kernel_group_of(c))
+    end
+    # a heap of (penalised estimate, group, position within the group, penalty used): the
+    # penalties only grow, so a popped entry whose penalty is stale is pushed back updated
+    heap = [(candidates[idx[1]][1], g, 1, 0) for (g, idx) in groups]
     heapify!(heap)
     out = similar(candidates, 0)
     while !isempty(heap) && length(out) < limit
-        (_, g, k) = heappop!(heap)
+        (_, g, k, used) = heappop!(heap)
         idx = groups[g]
+        t, c = candidates[idx[k]]
+        pen = penalty(c)
+        if pen != used
+            heappush!(heap, (t * (1 + REPEAT_PENALTY * pen), g, k, pen))
+            continue
+        end
         push!(out, candidates[idx[k]])
+        for key in (block_of(c), group_of(c), kernel_group_of(c))
+            taken[key] = count(key) + 1
+        end
         if k < length(idx)
-            heappush!(heap, (candidates[idx[k+1]][1] * (1 + REPEAT_PENALTY * k), g, k + 1))
+            t2, c2 = candidates[idx[k+1]]
+            pen2 = penalty(c2)
+            heappush!(heap, (t2 * (1 + REPEAT_PENALTY * pen2), g, k + 1, pen2))
         end
     end
     out

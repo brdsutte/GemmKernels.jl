@@ -133,17 +133,20 @@ config_iterator(problem) = STRATEGY == "model" ? ModelOrderIterator(problem, ran
 const SWIZZLES = ["horizontal-1", "horizontal-2", "horizontal-4", "horizontal-8", "horizontal-16",
                   "vertical-1", "vertical-2", "vertical-4", "vertical-8", "vertical-16"]
 
-# the GPU, as the cost model sees it
+# the GPU, as the cost model sees it (queried once, before tune.jl gives up the GPU)
+const MODEL_GPU = Ref{Any}(nothing)
 function model_gpu()
+    MODEL_GPU[] === nothing || return MODEL_GPU[]
     dev = device()
     attr(a) = CUDA.attribute(dev, a)
-    ModelOrder.GPUInfo(; sms = attr(CUDA.DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT),
+    gpu = ModelOrder.GPUInfo(; sms = attr(CUDA.DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT),
                          smem_per_sm = attr(CUDA.DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR),
                          smem_per_block = attr(CUDA.DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN),
                          regs_per_sm = attr(CUDA.DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_MULTIPROCESSOR),
                          max_threads_per_sm = attr(CUDA.DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR),
                          max_blocks_per_sm = attr(CUDA.DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_MULTIPROCESSOR),
                          async = TUNE_ASYNC, max_tuple_splat = min(MAX_TUPLE_SPLAT, typemax(Int32)))
+    MODEL_GPU[] = gpu
 end
 
 # The model's order, with every RANDOM_EVERY-th configuration from the random order. Its
