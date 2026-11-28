@@ -96,7 +96,7 @@ isdefined(@__MODULE__, :Configs) || include("../configs/configs.jl")
         @testcase "GEMM, one step per K-tile, $(stages) stages$(double_buffer ? ", double-buffered" : ""), K = $(K)" for
                 stages in [2, 3, 4], double_buffer in [false, true], K in [16, 32, 48, 1024]
             problem = WMMAMatrixMultiplication(; M = 256, N = 128, K, AB_type = Float16, CD_type = Float32,
-                                                 zero_c = false)
+                                                 transpose_a = false, transpose_b = false, zero_c = false)
             data = allocate_data(problem)
             initialize_data(problem, data...)
             reference = Array(calculate_reference(problem, data...))
