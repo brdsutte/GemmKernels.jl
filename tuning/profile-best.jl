@@ -14,6 +14,9 @@
 # also prints, per contraction, which configuration it profiled and whether its result is
 # correct; profile-best-manifest.csv keeps the same information.
 #
+# With GK_PROFILE_INDEXING=default,lean32, each contraction's configuration is profiled once
+# per address arithmetic of the GETT layouts, in ranges "TC<n> ours default" etc.
+#
 # Nsight Compute locks the clocks to the base clock by default (--clock-control base), so
 # the kernel durations it reports are not those of the tuner.
 
@@ -35,26 +38,32 @@ function best_config(configs, name)
     return NamedTuple(rows[argmin(rows.time), :])
 end
 
+const INDEXINGS = filter(!isempty, String.(strip.(split(get(ENV, "GK_PROFILE_INDEXING", ""), ','))))
+
 function profile_tc(tc, problem, config)
     data = allocate_data(problem)
     initialize_data(problem, data...)
     reference = Array(calculate_reference(problem, data...))
 
     baseline_args = prepare_baseline(problem, data...)
-    params = create_params(config)
-    args = try
-        prepare(problem, data...; params...)
-    finally
-        GemmKernels.Tensors.OVERRIDE_do_override = false
-    end
-    initialize_data(problem, data...; params...)
-
-    # compile and warm up both outside the profiled ranges, and verify ours
-    valid = verify(problem, reference, adapt(Array, execute(problem, data...; args...)))
     execute_baseline(problem, data...; baseline_args...)
-    synchronize()
 
-    CUDA.@profile external=true NVTX.@range "TC$tc ours" execute(problem, data...; args...)
+    # each variant: compile, warm up and verify outside the profiled range, then profile
+    valid = true
+    for indexing in (isempty(INDEXINGS) ? [nothing] : INDEXINGS)
+        variant = indexing === nothing ? config : merge(config, (; INDEXING = indexing))
+        params = create_params(variant)
+        args = try
+            prepare(problem, data...; params...)
+        finally
+            GemmKernels.Tensors.OVERRIDE_do_override = false
+        end
+        initialize_data(problem, data...; params...)
+        valid &= verify(problem, reference, adapt(Array, execute(problem, data...; args...)))
+        synchronize()
+        label = indexing === nothing ? "TC$tc ours" : "TC$tc ours $indexing"
+        CUDA.@profile external=true NVTX.@range label execute(problem, data...; args...)
+    end
     CUDA.@profile external=true NVTX.@range "TC$tc cutensor" execute_baseline(problem, data...; baseline_args...)
 
     foreach(CUDA.unsafe_free!, data)
