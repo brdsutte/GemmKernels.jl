@@ -23,6 +23,10 @@ isempty(runs) && error("no STRATEGY-tcN-rR.arrow files in $dir")
 # best time found by each moment, per run
 function curve(df)
     ok = filter(:status => ==("success"), df)
+    # results saved before tune.jl recorded found_after where outcomes are decided can carry
+    # -Inf (decided, but not processed when the sweep stopped): count them at the end
+    last = maximum(filter(isfinite, df.found_after); init = 0.0)
+    ok.found_after = [isfinite(t) ? t : last for t in ok.found_after]
     sort!(ok, :found_after)
     (ok.found_after, accumulate(min, ok.time))
 end

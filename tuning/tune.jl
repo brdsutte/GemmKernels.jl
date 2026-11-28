@@ -942,6 +942,7 @@ function main()
                                     put!(initial_jobs, i)
                                 else
                                     all_configs[i, :status] = prechecked
+                                    all_configs[i, :found_after] = time_spent_for_problem + time() - sweep_start
                                     push!(results, ("master (pre-check)", i))
                                 end
                             end
@@ -1033,6 +1034,7 @@ function main()
                                     end
                                 else
                                     wait_t0 = time()
+                                    config.found_after = time_spent_for_problem + time() - sweep_start
                                     push!(results, (worker, i))
                                     wait_t1 = time(); note_time(compilation_times_master, :wait_for_push_results, wait_t1 - wait_t0); wait_t0 = wait_t1
                                 end
@@ -1145,6 +1147,7 @@ function main()
                                 worker = nothing
                                 wait_t1 = time(); note_time(measurement_times_master, :wait_for_removing_crashed_worker, wait_t1 - wait_t0); wait_t0 = wait_t1
                             finally
+                                config.found_after = time_spent_for_problem + time() - sweep_start
                                 push!(results, (worker, i))
 
                                 wait_t1 = time(); note_time(measurement_times_master, :wait_for_push_results, wait_t1 - wait_t0); wait_t0 = wait_t1
@@ -1172,7 +1175,11 @@ function main()
                             while isready(results)
                                 worker, i = take!(results)
                                 config = all_configs[i, :]
-                                config.found_after = time_spent_for_problem + time() - sweep_start
+                                # found_after is recorded where the outcome is decided: results that
+                                # are decided but not yet processed when the sweep stops (a checkpoint
+                                # saves them) then still carry the time they were found, not -Inf
+                                isfinite(config.found_after) ||
+                                    (config.found_after = time_spent_for_problem + time() - sweep_start)
                                 push!(new_configs, config)
                                 nfinished += 1
 

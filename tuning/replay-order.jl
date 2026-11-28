@@ -115,7 +115,8 @@ function replay(df::DataFrame, label)
         R = reduce(hcat, [best_after(randperm(rng, n), times, costs) for _ in 1:TRIALS])
         mb = [budget_to(model_order(ranked, n, rng), times, costs, target) for _ in 1:TRIALS]
         rb = [budget_to(randperm(rng, n), times, costs, target) for _ in 1:TRIALS]
-        actual = sortperm(g.found_after)
+        # the sweep's own order (-Inf: decided but not processed when the sweep stopped, so last)
+        actual = sortperm([isfinite(t) ? t : Inf for t in g.found_after])
         A = best_after(actual, times, costs)
         ab = budget_to(actual, times, costs, target)
 

@@ -44,7 +44,9 @@ for rep in $(seq 1 "$REPS"); do
                 $JULIA --project --heap-size-hint=5G tune.jl > "$DIR/$s-tc$tc-r$rep.log" 2>&1 \
                 || { step "TC$tc $s r$rep: tune.jl failed, see $DIR/$s-tc$tc-r$rep.log"; tail -20 "$DIR/$s-tc$tc-r$rep.log"; continue; }
             touch "$out.done"
-            grep -E "best time|reached time limit|Cost model" "$DIR/$s-tc$tc-r$rep.log" | tail -3 || true
+            grep -E "reached time limit|tested all|beats the baseline" "$DIR/$s-tc$tc-r$rep.log" | tail -1 || true
+            # tune.jl logs to tuning.log (shared by all runs), not to its output
+            [ "$s" = model ] && { grep "Cost model" tuning.log | tail -1 || true; }
         done
     done
 done
