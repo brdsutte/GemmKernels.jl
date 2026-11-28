@@ -14,6 +14,7 @@ try
         include("tiling.jl")
         include("matmul.jl")
         include("blas.jl")
+        include("gett-modes.jl")
         include("examples.jl")
         include("contraction.jl")
     end

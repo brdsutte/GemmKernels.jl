@@ -100,6 +100,39 @@ end
 # precomputeGETTLayoutConstants([16, 512, 32], ([1, 3], [2]))
 # result: ((1, 3), (2,), (1, 16), (1,), (16, 512, 32), (1, 8192), (16,))
 
+# The vectorised (and strided) copies of the GETT layouts compute the address of a thread's
+# copy tile from its first element, and assume that its other elements follow in memory,
+# one after another (or at a fixed stride). That only holds as long as the tile stays within
+# one tensor mode, or within a run of modes that are consecutive in memory: a copy that
+# crosses from one mode into the next, non-adjacent one silently reads or writes the wrong
+# elements. Copy tiles start at multiples of their size, so no copy crosses such a boundary
+# if and only if the extent of that run of modes is a multiple of the copy's size.
+#
+# Returns `nothing` if the copies of a layout with these constants, with copy tiles of
+# `tile_size` (a NamedTuple, in the layout's dimension order), stay within the runs of modes,
+# and otherwise the dimension, the number of elements of a copy, and the extent of the run.
+function copy_tile_crossing(modT1, strides1, modT2, strides2, tile_size)
+    for (d, modT, strides) in ((1, modT1, strides1), (2, modT2, strides2))
+        n = Tuple(tile_size)[d]
+        n == 1 && continue
+        run = 1
+        for j in eachindex(modT)
+            run *= modT[j]
+            (j < length(modT) && strides[j + 1] == strides[j] * modT[j]) || break
+        end
+        run % n == 0 || return (d, n, run)
+    end
+    return nothing
+end
+
+copy_tile_crossing(L, tile_size) = nothing
+copy_tile_crossing(::Type{<:GETTLayoutColMajor{T, divT1, modT1, strides1, divT2, modT2, strides2}},
+                   tile_size) where {T, divT1, modT1, strides1, divT2, modT2, strides2} =
+    copy_tile_crossing(modT1, strides1, modT2, strides2, tile_size)
+copy_tile_crossing(::Type{<:GETTLayoutRowMajor{T, divT1, modT1, strides1, divT2, modT2, strides2}},
+                   tile_size) where {T, divT1, modT1, strides1, divT2, modT2, strides2} =
+    copy_tile_crossing(modT1, strides1, modT2, strides2, tile_size)
+
 export precomputeGETTLayoutConstants
 function precomputeGETTLayoutConstants(
     extent::Vector{Int},
