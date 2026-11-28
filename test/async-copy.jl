@@ -72,8 +72,9 @@ isdefined(@__MODULE__, :Configs) || include("../configs/configs.jl")
     end
 
     if CUDA.functional() && capability(device()) ≥ v"8.0"
-        @testcase "GEMM $(transpose_a ? 'T' : 'N')$(transpose_b ? 'T' : 'N'), $(stages) stages, K = $(K)" for
-                transpose_a in [false, true], transpose_b in [false, true], stages in [2, 3, 4], K in [32, 1024]
+        @testcase "GEMM $(transpose_a ? 'T' : 'N')$(transpose_b ? 'T' : 'N'), $(stages) stages$(double_buffer ? ", double-buffered" : ""), K = $(K)" for
+                transpose_a in [false, true], transpose_b in [false, true], stages in [2, 3, 4], K in [32, 1024],
+                double_buffer in [false, true]
             # K = 32 is a single K-tile: fewer tiles than the prologue would prefetch.
             problem = WMMAMatrixMultiplication(; M = 512, N = 256, K, AB_type = Float16, CD_type = Float32,
                                                  transpose_a, transpose_b, zero_c = false)
@@ -83,13 +84,14 @@ isdefined(@__MODULE__, :Configs) || include("../configs/configs.jl")
 
             args = prepare(problem; BLOCK_M = 128, BLOCK_N = 64, BLOCK_K = 32, WARPS_M = 2, WARPS_N = 2,
                                     OP_M = 16, OP_N = 16, OP_K = 16, zero_c = false,
-                                    kernel = Kernel.matmul_pipelined_async(stages))
+                                    kernel = Kernel.matmul_pipelined_async(stages; double_buffer))
             initialize_data(problem, data...)
             result = Array(execute(problem, data...; args...))
             @test isapprox(result, reference; rtol = sqrt(eps(Float16)))
         end
 
-        @testcase "Tensor contraction, $(stages) stages" for stages in [2, 3, 4]
+        @testcase "Tensor contraction, $(stages) stages$(double_buffer ? ", double-buffered" : "")" for stages in [2, 3, 4],
+                                                                                                    double_buffer in [false, true]
             problem = WMMATensorContraction(; name = "1.2.3-2.4.1-4.3", extents = [312, 312, 24, 312],
                                               data_type = Float16, compute_type = Float16,
                                               accumulate_type = Float32, zero_c = true)
@@ -98,7 +100,7 @@ isdefined(@__MODULE__, :Configs) || include("../configs/configs.jl")
             reference = Array(calculate_reference(problem, data...))
 
             params = (; BLOCK_M = 128, BLOCK_N = 16, BLOCK_K = 32, WARPS_M = 2, WARPS_N = 1,
-                        OP_M = 32, OP_N = 8, OP_K = 16, kernel = Kernel.matmul_pipelined_async(stages),
+                        OP_M = 32, OP_N = 8, OP_K = 16, kernel = Kernel.matmul_pipelined_async(stages; double_buffer),
                         is_A_col_major = true, is_B_col_major = true, is_D_col_major = true,
                         PERM_N = [3], PERM_K = [4], cta_swizzle = CTASwizzle.HorizontallyTiled{4})
 
