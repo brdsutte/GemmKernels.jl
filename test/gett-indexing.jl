@@ -23,7 +23,9 @@ end
 @testset "GETT indexing" begin
     @testcase "lean offsets equal the original ones" begin
         # (extents, (modes of the first dimension, modes of the second dimension))
+        # (UInt32 only where the tensor has fewer than 2^31 elements, as for indexing = :lean32)
         layouts = [([5136, 5120], ([1], [2])),
+                   ([72, 72, 72, 72], ([1, 3], [4, 2])),
                    ([72, 72, 72, 72, 72, 72], ([1, 3], [6, 5])),
                    ([24, 16, 16, 24, 16, 24], ([2, 4], [6, 5, 1])),
                    ([312, 296, 96, 962], ([1], [4, 3]))]
@@ -31,7 +33,8 @@ end
             (divT1, divT2, modT1, modT2, strides1, strides2, _, _) =
                 precomputeGETTLayoutConstants(extent, dims, false)
             size1, size2 = prod(extent[dims[1]]), prod(extent[dims[2]])
-            for IT in (UInt64, UInt32), _ in 1:2000
+            index_types = prod(extent) <= typemax(Int32) ? (UInt64, UInt32) : (UInt64,)
+            for IT in index_types, _ in 1:2000
                 G1, G2 = rand(0:size1-1), rand(0:size2-1)
                 @test GETTLayout.lean_offset(IT, G1, G2, Val(divT1), Val(modT1), Val(strides1),
                                              Val(divT2), Val(modT2), Val(strides2)) ==
