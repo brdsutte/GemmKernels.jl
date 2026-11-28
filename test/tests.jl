@@ -13,13 +13,13 @@ end
 #   new              the tests added or repaired by the fix branches and the async-copy
 #                    prototype
 #   a,b,...          the given files, e.g. GEMMKERNELS_TESTS=async-copy,gett-layout
-all_tests = ["tiling.jl", "cta-swizzle.jl", "matmul.jl", "blas.jl", "gett-layout.jl",
+all_tests = ["tiling.jl", "block-shape.jl", "cta-swizzle.jl", "matmul.jl", "blas.jl", "gett-layout.jl",
              "async-copy.jl", "examples.jl", "contraction.jl", "contraction-configs.jl",
              "rowmajor-d.jl", "kernel-cache.jl", "tuning-overrides.jl", "baseline.jl",
              "pipelined-ng-stages.jl", "split-k.jl"]
 new_tests = ["cta-swizzle.jl", "gett-layout.jl", "async-copy.jl", "contraction.jl",
              "contraction-configs.jl", "rowmajor-d.jl", "kernel-cache.jl", "tuning-overrides.jl",
-             "baseline.jl", "pipelined-ng-stages.jl", "split-k.jl"]
+             "baseline.jl", "pipelined-ng-stages.jl", "split-k.jl", "block-shape.jl"]
 test_selection = strip(get(ENV, "GEMMKERNELS_TESTS", ""))
 test_files = if isempty(test_selection)
     all_tests
