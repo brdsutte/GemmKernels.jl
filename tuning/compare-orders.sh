@@ -7,7 +7,8 @@
 # Usage (from the repository): bash tuning/compare-orders.sh
 #   GK_COMPARE_TCS         TCs to tune (default: 1,5,8,16,18,33,41,47, all held out while
 #                          designing the cost model)
-#   GK_COMPARE_STRATEGIES  default: random,model
+#   GK_COMPARE_STRATEGIES  default: random,model; each an order (GK_STRATEGY), optionally with
+#                          a first-measurement filter (GK_FILTER), e.g. random+events
 #   GK_COMPARE_BUDGET      seconds of sweeping per TC and run (default 1800)
 #   GK_COMPARE_REPS        repetitions (default 1)
 #   GK_COMPARE_DIR         results directory (default tuning/orders)
@@ -39,14 +40,15 @@ for rep in $(seq 1 "$REPS"); do
             if [ -f "$out" ] && [ -f "$out.done" ]; then step "TC$tc $s r$rep: already done"; continue; fi
             rm -f "$out" "$out.version"
             step "TC$tc $s r$rep: tuning for $BUDGET s"
-            GK_PROBLEMS=$tc GK_STRATEGY=$s GK_CONFIGS="$out" GK_EXHAUSTIVE=1 \
+            order_="${s%%+*}"; filter_=profiler; [[ "$s" == *+* ]] && filter_="${s#*+}"
+            GK_PROBLEMS=$tc GK_STRATEGY=$order_ GK_FILTER=$filter_ GK_CONFIGS="$out" GK_EXHAUSTIVE=1 \
             GK_PROBLEM_TIME_LIMIT=$BUDGET GK_SWEEP_ONLY=1 GK_NO_SYSTEMD=1 \
                 $JULIA --project --heap-size-hint=5G tune.jl > "$DIR/$s-tc$tc-r$rep.log" 2>&1 \
                 || { step "TC$tc $s r$rep: tune.jl failed, see $DIR/$s-tc$tc-r$rep.log"; tail -20 "$DIR/$s-tc$tc-r$rep.log"; continue; }
             touch "$out.done"
             grep -E "reached time limit|tested all|beats the baseline" "$DIR/$s-tc$tc-r$rep.log" | tail -1 || true
             # tune.jl logs to tuning.log (shared by all runs), not to its output
-            [ "$s" = model ] && { grep "Cost model" tuning.log | tail -1 || true; }
+            [ "$order_" = model ] && { grep "Cost model" tuning.log | tail -1 || true; }
         done
     done
 done

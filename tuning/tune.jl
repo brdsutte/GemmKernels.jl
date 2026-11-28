@@ -94,6 +94,23 @@ const PROBLEM_TIME_LIMIT = let v = strip(get(ENV, "GK_PROBLEM_TIME_LIMIT", ""))
     isempty(v) ? nothing : parse(Float64, v)
 end
 
+# How the first measurement of a configuration filters out slow ones (GK_FILTER):
+# - "profiler" (the default, as before): one measurement with the profiler; slower than 3x the
+#   baseline (cuTENSOR) -> "slow", otherwise measured in full.
+# - "events": two measurements with CUDA events, which cost far less than starting the
+#   profiler; the faster one decides. A configuration slower than 3x the baseline, or than
+#   FILTER_FACTOR x the best time found so far for the problem, is "slow" (with its event time);
+#   only the others are measured in full with the profiler, as before, and verified. Their final
+#   times come from the profiler only, as with "profiler". The measurement worker's log
+#   (tuning.log.<id>.measurement) records both times of every fully measured configuration
+#   ("Filter check"), to check that the events never make a fast configuration look slow.
+# - "check": as "profiler", but also takes the two event measurements first, and logs both
+#   times ("Filter check") for every configuration: an unbiased check of the events filter
+#   (with "events", configurations the events misjudge as slow are never measured in full).
+const FILTER = get(ENV, "GK_FILTER", "profiler")
+FILTER in ("profiler", "events", "check") || error("GK_FILTER must be profiler, events or check, not $FILTER")
+const FILTER_FACTOR = parse(Float64, get(ENV, "GK_FILTER_FACTOR", "1.5"))
+
 # The time limit for each single step (preparation, measurement, verification), in seconds.
 const CONFIG_TIME_LIMIT = 60
 
@@ -305,7 +322,7 @@ function prepare_config(problem, config, fake=false)
 end
 
 # take time measurements
-function measure_config(problem, config, max_time)
+function measure_config(problem, config, max_time, filter = "profiler")
     @info "Measuring $(repr_row(config))"
     state = prepared_state[]
     @assert state !== nothing
@@ -347,14 +364,33 @@ function measure_config(problem, config, max_time)
 
     # first measurement: check if the configuration is even worth measuring
     measurements = Float64[]
-    measuring = @elapsed begin
-        prof = CUDA.@profile concurrent=false execute(problem, data...; args...)
-        cur_time = device_time(prof)
+    event_time = nothing
+    filtering = measuring = 0.0
+    if filter in ("events", "check")
+        # with CUDA events (see GK_FILTER), the faster of two runs; not part of the
+        # measurements, which come from the profiler only
+        filtering = @elapsed begin
+            event_time = min(CUDA.@elapsed(execute(problem, data...; args...)),
+                             CUDA.@elapsed(execute(problem, data...; args...)))
+        end
     end
-    push!(measurements, cur_time)
-    if cur_time > max_time
-        @info "Configuration is too slow"
-        return "slow", measurements, nothing, (; measuring)
+    if filter == "events"
+        if event_time > max_time
+            @info "Configuration is too slow: $(prettytime(event_time)) (events) > $(prettytime(max_time))"
+            return "slow", [event_time], nothing, (; filtering)
+        end
+    else
+        measuring = @elapsed begin
+            prof = CUDA.@profile concurrent=false execute(problem, data...; args...)
+            cur_time = device_time(prof)
+        end
+        push!(measurements, cur_time)
+        if cur_time > max_time
+            @info "Configuration is too slow"
+            event_time === nothing ||
+                @info "Filter check: events $(event_time) s, profiler $(cur_time) s, ratio $(event_time / cur_time) (slow, one profiler measurement)"
+            return "slow", measurements, nothing, (; filtering, measuring)
+        end
     end
 
     # make sure we're starting with an idle device
@@ -386,7 +422,11 @@ function measure_config(problem, config, max_time)
     end
 
     @info "Measured $(prettytime(minimum(measurements))) in $(length(measurements)) measurements"
-    return "success", measurements, result, (; warmup, initializing, settling, measuring, copying)
+    if event_time !== nothing
+        # the evidence that the events filter is safe: events vs profiler, per configuration
+        @info "Filter check: events $(event_time) s, profiler $(minimum(measurements)) s, ratio $(event_time / minimum(measurements))"
+    end
+    return "success", measurements, result, (; warmup, filtering, initializing, settling, measuring, copying)
 end
 
 function get_MNK(extents, modes)
@@ -1107,8 +1147,9 @@ function main()
 
                                 # measure
                                 max_time = 3 * target_time
+                                FILTER == "events" && (max_time = min(max_time, FILTER_FACTOR * best_time))
                                 measuring, (status, measurements, result, times) = @something(
-                                    remotecall_until(measure_config, worker, problem, NamedTuple(config), max_time),
+                                    remotecall_until(measure_config, worker, problem, NamedTuple(config), max_time, FILTER),
                                     error("Time-out measuring configuration")
                                 )
                                 worker_elapsed += measuring
@@ -1233,6 +1274,7 @@ function main()
                                     :startup,
                                     :preparing,
                                     :warmup,
+                                    :filtering,
                                     :initializing,
                                     :settling,
                                     :measuring,

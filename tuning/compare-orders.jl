@@ -14,7 +14,7 @@ out = length(ARGS) >= 2 ? ARGS[2] : joinpath(dir, "compare-orders.csv")
 
 runs = DataFrame(strategy = String[], tc = Int[], rep = Int[], file = String[])
 for f in readdir(dir)
-    m = match(r"^(\w+)-tc(\d+)-r(\d+)\.arrow$", f)
+    m = match(r"^([\w+]+)-tc(\d+)-r(\d+)\.arrow$", f)
     m === nothing && continue
     push!(runs, (m[1], parse(Int, m[2]), parse(Int, m[3]), joinpath(dir, f)))
 end
