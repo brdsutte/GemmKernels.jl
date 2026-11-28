@@ -328,6 +328,60 @@ Base.@propagate_inbounds @inline Layout.tile_pointer(
              isLoadOrStoreStrided, strideOverExtent} =
     pointer(workspace) + (lean_offset(L, tile) - 1) * sizeof(T)
 
+# Partial edge tiles (opt-in, see `createGETTLayout`'s `edge`). The layouts above require the
+# GEMM dimensions to be multiples of the block shape, so the tensors are padded: whole modes,
+# which for a 128-wide tile over two modes of 72 means padding one to 80, i.e. 11% more work
+# per dimension. GETTLayoutMasked instead lets the last row and column of thread blocks extend
+# past the edge: it wraps a GETT layout, loads zeros for the tiles of each thread whose
+# logical coordinate lies beyond `bound1` (first dimension) or `bound2` (second dimension),
+# and skips their stores. A bound of 0 means that dimension is not masked. A thread's tile
+# never straddles a bound: `setUpGETTKernel` requires the bounds to be multiples of the tile
+# sizes of the copies.
+abstract type GETTLayoutMasked{T, L, bound1, bound2} <: Layout.LayoutBase{T} end
+
+@inline function in_bounds(::Type{GETTLayoutMasked{T, L, bound1, bound2}}, tile) where {T, L, bound1, bound2}
+    (bound1 == 0 || tile.base[1] + tile.offset[1] < bound1) &&
+        (bound2 == 0 || tile.base[2] + tile.offset[2] < bound2)
+end
+
+Base.@propagate_inbounds @inline function Layout.load(
+        M::Type{GETTLayoutMasked{T, L, bound1, bound2}}, workspace, tile::Tile{size}
+    ) where {T, L, bound1, bound2, size}
+    NUMEL = size[1] * size[2]
+    if in_bounds(M, tile)
+        return Layout.load(L, workspace, tile)
+    else
+        return ntuple(_ -> VecElement{T}(zero(T)), Val(NUMEL))
+    end
+end
+
+Base.@propagate_inbounds @inline function Layout.store!(
+        M::Type{GETTLayoutMasked{T, L, bound1, bound2}}, workspace, value, tile::Tile
+    ) where {T, L, bound1, bound2}
+    if in_bounds(M, tile)
+        Layout.store!(L, workspace, value, tile)
+    end
+    return
+end
+
+# Asynchronous copies: the tiles beyond the edge are zero-filled by cp.async itself (a source
+# size of 0 bytes), from the workspace's first element as a valid dummy address.
+Layout.contiguous_tiles(::Type{GETTLayoutMasked{T, L, bound1, bound2}}) where {T, L, bound1, bound2} =
+    Layout.contiguous_tiles(L)
+
+Base.@propagate_inbounds @inline function Layout.copy_async!(
+        M::Type{GETTLayoutMasked{T, L, bound1, bound2}}, shared_layout,
+        shared_workspace, global_workspace, shared_tile::Tile{size}, global_tile::Tile
+    ) where {T, L, bound1, bound2, size}
+    Bytes = sizeof(T) * size[1] * size[2]
+    dst = Layout.tile_pointer(shared_layout, shared_workspace, shared_tile)
+    if in_bounds(M, global_tile)
+        Layout.cp_async!(dst, Layout.tile_pointer(L, global_workspace, global_tile), Val(Bytes))
+    else
+        Layout.cp_async_zfill!(dst, pointer(global_workspace), Val(Bytes))
+    end
+end
+
 # The address arithmetic of the GETT layouts (see GETTLayoutLean):
 #   :default   the original layouts
 #   :lean32    unsigned 32-bit, without the redundant modulos (tensors < 2^31 elements)
@@ -341,6 +395,7 @@ function createGETTLayout(
     isLoadOrStoreStrided::Bool,
     strideOver::Union{Vector{Int}, Nothing} = nothing;
     indexing::Symbol = :default,
+    bounds::Tuple{Int, Int} = (0, 0),
 )
     (
         divT1, divT2,
@@ -349,7 +404,7 @@ function createGETTLayout(
         isLoadOrStoreStrided, strideOverExtent
     ) = precomputeGETTLayoutConstants(extent, dimensions, isLoadOrStoreStrided, strideOver)
 
-    if indexing == :default
+    L = if indexing == :default
         if (isColMajor == true)
             GETTLayoutColMajor{DT, divT1, modT1, strides1, divT2, modT2, strides2,
                                isLoadOrStoreStrided, strideOverExtent}
@@ -369,6 +424,9 @@ function createGETTLayout(
                                    isLoadOrStoreStrided, strideOverExtent}
         end
     end
+
+    # partial edge tiles: mask the dimensions with a non-zero bound
+    return bounds == (0, 0) ? L : GETTLayoutMasked{DT, L, bounds[1], bounds[2]}
 end
 
 end
