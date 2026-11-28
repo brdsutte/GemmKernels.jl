@@ -17,7 +17,9 @@
 # With GK_PROFILE_INDEXING=default,lean32, each contraction's configuration is profiled once
 # per address arithmetic of the GETT layouts, in ranges "TC<n> ours default" etc. Likewise
 # GK_PROFILE_EDGE=pad,partial profiles it with padding and with partial edge tiles; with both,
-# every combination is profiled ("TC<n> ours lean32 mask" etc.).
+# every combination is profiled ("TC<n> ours lean32 partial" etc.). GK_PROFILE_KERNELS (kernel
+# strings as in the tuner, e.g. pipelined,pipelined_async_3) profiles the configuration with
+# each of those kernels instead of its own, in the same combinations.
 #
 # Nsight Compute locks the clocks to the base clock by default (--clock-control base), so
 # the kernel durations it reports are not those of the tuner.
@@ -42,6 +44,7 @@ end
 
 const INDEXINGS = filter(!isempty, String.(strip.(split(get(ENV, "GK_PROFILE_INDEXING", ""), ','))))
 const EDGES = filter(!isempty, String.(strip.(split(get(ENV, "GK_PROFILE_EDGE", ""), ','))))
+const KERNELS = filter(!isempty, String.(strip.(split(get(ENV, "GK_PROFILE_KERNELS", ""), ','))))
 
 function profile_tc(tc, problem, config)
     data = allocate_data(problem)
@@ -54,8 +57,10 @@ function profile_tc(tc, problem, config)
     # each variant: compile, warm up and verify outside the profiled range, then profile
     valid = true
     for indexing in (isempty(INDEXINGS) ? [nothing] : INDEXINGS),
-        edge in (isempty(EDGES) ? [nothing] : EDGES)
+        edge in (isempty(EDGES) ? [nothing] : EDGES),
+        kernel in (isempty(KERNELS) ? [nothing] : KERNELS)
         variant = config
+        kernel === nothing || (variant = merge(variant, (; kernel_str = kernel)))
         indexing === nothing || (variant = merge(variant, (; INDEXING = indexing)))
         edge === nothing || (variant = merge(variant, (; EDGE = edge)))
         params = create_params(variant)
@@ -67,7 +72,7 @@ function profile_tc(tc, problem, config)
         initialize_data(problem, data...; params...)
         valid &= verify(problem, reference, adapt(Array, execute(problem, data...; args...)))
         synchronize()
-        label = join(filter(!isnothing, ["TC$tc ours", indexing, edge]), ' ')
+        label = join(filter(!isnothing, ["TC$tc ours", kernel, indexing, edge]), ' ')
         CUDA.@profile external=true NVTX.@range label execute(problem, data...; args...)
     end
     CUDA.@profile external=true NVTX.@range "TC$tc cutensor" execute_baseline(problem, data...; baseline_args...)

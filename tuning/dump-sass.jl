@@ -9,7 +9,8 @@
 # TCs defaults to 12,20,22,24; out dir to sass/. Writes tc<N>-<indexing>.sass per
 # configuration, and prints its registers per thread and local memory (spills). With
 # GK_DUMP_EDGE=pad,partial, each is dumped with padding and with partial edge tiles
-# (tc<N>-<indexing>-<edge>.sass).
+# (tc<N>-<indexing>-<edge>.sass); with GK_DUMP_KERNELS (kernel strings as in the tuner), with
+# each of those kernels instead of the configuration's own (tc<N>-<kernel>-<indexing>.sass).
 
 using CUDA, GemmKernels, DataFrames
 import Arrow
@@ -18,6 +19,7 @@ const CONFIGS = ARGS[1]
 const TCS = parse.(Int, split(get(ARGS, 2, "12,20,22,24"), ','))
 const OUT = get(ARGS, 3, "sass")
 const EDGES = filter(!isempty, String.(strip.(split(get(ENV, "GK_DUMP_EDGE", ""), ','))))
+const KERNELS = filter(!isempty, String.(strip.(split(get(ENV, "GK_DUMP_KERNELS", ""), ','))))
 include(joinpath(@__DIR__, "wmma-contraction.jl"))
 
 function nvdisasm()
@@ -72,10 +74,13 @@ for tc in TCS
     nrow(sel) == 1 || (@warn "TC$tc: $(nrow(sel)) configurations; skipped"; continue)
     thesis = NamedTuple(first(sel))
     println("TC$tc: $(repr_row(thesis))")
-    for indexing in ("default", "lean32"), edge in (isempty(EDGES) ? [nothing] : EDGES)
+    for indexing in ("default", "lean32"), edge in (isempty(EDGES) ? [nothing] : EDGES),
+        kernel in (isempty(KERNELS) ? [nothing] : KERNELS)
         variant = merge(thesis, (; INDEXING = indexing))
         edge === nothing || (variant = merge(variant, (; EDGE = edge)))
-        dump(problem, variant, joinpath(OUT, edge === nothing ? "tc$tc-$indexing" : "tc$tc-$indexing-$edge"))
+        kernel === nothing || (variant = merge(variant, (; kernel_str = kernel)))
+        name = join(filter(!isnothing, ["tc$tc", kernel, indexing, edge]), '-')
+        dump(problem, variant, joinpath(OUT, name))
     end
 end
 println("written to $OUT/")
