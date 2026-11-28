@@ -430,5 +430,18 @@ function setUpGETTKernel(desc::ContractionDescriptor, operator,
             throw(GemmKernels.ConfigError("With edge = :mask, M ($M) and N ($N) must be multiples of the copy tiles ($(gemmConf.mem_a_thread), $(gemmConf.mem_b_thread), $(gemmConf.mem_cd_thread))"))
     end
 
+    # The copies of the GETT layouts must not cross from one tensor mode into the next (see
+    # GETTLayout.copy_tile_crossing): reject such configurations instead of computing wrong
+    # results.
+    for (name, layout, tile) in (("A", gemmConf.global_a_layout, gemmConf.mem_a_thread),
+                                 ("B", gemmConf.global_b_layout, gemmConf.mem_b_thread),
+                                 ("C", gemmConf.global_c_layout, gemmConf.mem_cd_thread),
+                                 ("D", gemmConf.global_d_layout, gemmConf.mem_cd_thread))
+        crossing = GETTLayout.copy_tile_crossing(layout, tile)
+        crossing === nothing && continue
+        d, n, run = crossing
+        throw(GemmKernels.ConfigError("The copies of $name ($n consecutive elements along $(keys(tile)[d])) would cross a tensor mode boundary: the leading mode(s) of $(keys(tile)[d]) in $name span $run elements, which is not a multiple of $n."))
+    end
+
     return GETTPlan(gemmConf)
 end
