@@ -6,9 +6,12 @@
 # variants are reported with GemmKernels' reason, and a crashing variant restarts the worker.
 #
 # usage (from the repository root, on the GPU machine, with nothing else on the GPU):
-#   julia +1.11 --project=tuning tuning/try-variants.jl <thesis configs.arrow> [TCs] [out.csv]
+#   julia +1.11 --project=tuning tuning/try-variants.jl <thesis configs.arrow> [TCs] [out.csv] [set]
 #
-# TCs defaults to 9,10,11,12,13,14,19,20,22,24. Like tune.jl, compiling and profiling happen
+# TCs defaults to 9,10,11,12,13,14,19,20,22,24. With set = indexing, the variants are instead
+# the thesis configuration, the same with pipelined_async_3, and the best variant found so
+# far for TC12/20/22/24, each with the three address arithmetics of the GETT layouts
+# (INDEXING = default, lean64, lean32). Like tune.jl, compiling and profiling happen
 # in separate remote calls: compiling after CUDA.@profile within the same call fails with
 # CUDA.jl 5.11.
 
@@ -17,6 +20,7 @@ using Distributed
 const CONFIGS = ARGS[1]
 const TCS = parse.(Int, split(get(ARGS, 2, "9,10,11,12,13,14,19,20,22,24"), ','))
 const OUT = get(ARGS, 3, "try-variants.csv")
+const SET = get(ARGS, 4, "shapes")
 const SAMPLES = 10
 const DIR = @__DIR__
 
@@ -84,6 +88,15 @@ function variants(tc)
         end
     end
     return list
+end
+
+function indexing_variants(tc)
+    bases = Any[v("thesis"), v("thesis, async 3"; kernel_str = "pipelined_async_3")]
+    tc in (12, 20, 22, 24) &&
+        push!(bases, v("128×128×32, 2×4 warps, async 4"; BLOCK_M = 128, BLOCK_N = 128, BLOCK_K = 32,
+                       WARPS_M = 2, WARPS_N = 4, op16..., kernel_str = "pipelined_async_4"))
+    return Any[v("$(b.label), $ix", b.split_k; b.overrides..., INDEXING = ix)
+               for b in bases for ix in ("default", "lean64", "lean32")]
 end
 
 const WORKER_CODE = quote
@@ -182,7 +195,7 @@ function main()
         cutensor = remotecall_fetch(measure_baseline, w, SAMPLES)
         println("   cuTENSOR: $(round(cutensor * 1e6; digits=1)) μs")
 
-        for var in variants(tc)
+        for var in (SET == "indexing" ? indexing_variants(tc) : variants(tc))
             (; label, overrides, split_k) = var
             config = merge(thesis, overrides)
             desc = repr_row(merge(config, (; SPLIT_K = split_k)))

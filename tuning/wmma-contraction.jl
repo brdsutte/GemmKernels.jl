@@ -220,6 +220,7 @@ function repr_row(row)
     print(io, ", $(row.cta_swizzle_str) swizzle")
     print(io, ", $(row.kernel_str) kernel")
     hasproperty(row, :SPLIT_K) && row.SPLIT_K != 1 && print(io, ", split-K $(row.SPLIT_K)")
+    hasproperty(row, :INDEXING) && row.INDEXING != "default" && print(io, ", $(row.INDEXING) indexing")
     print(io, ")")
 
     return String(take!(io))
@@ -244,9 +245,13 @@ function create_params(row)
     cta_swizzle = cta_swizzle_string_to_function(row.cta_swizzle_str)
     # configurations from before split-K have no SPLIT_K column
     SPLIT_K = hasproperty(row, :SPLIT_K) ? row.SPLIT_K : 1
+    # the address arithmetic of the GETT layouts (see GETTLayout.createGETTLayout); not
+    # tuned yet, so configurations have no INDEXING column
+    INDEXING = hasproperty(row, :INDEXING) ? row.INDEXING : "default"
 
     (; BLOCK_M, BLOCK_N, BLOCK_K, WARPS_M, WARPS_N, OP_M, OP_N, OP_K, kernel,
-       is_A_col_major, is_B_col_major, is_D_col_major, PERM_M, PERM_N, PERM_K, cta_swizzle, SPLIT_K)
+       is_A_col_major, is_B_col_major, is_D_col_major, PERM_M, PERM_N, PERM_K, cta_swizzle, SPLIT_K,
+       INDEXING)
 end
 
 function kernel_string_to_function(str)

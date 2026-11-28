@@ -1,13 +1,13 @@
 # Dump the PTX and SASS of the kernels of chosen configurations, for inspecting the
 # generated code (e.g. the address arithmetic of the GETT layouts): by default the thesis's
-# best configuration of each given TC, and the same configuration with the given kernel.
-# Compiles only; runs nothing on the GPU.
+# best configuration of each given TC, with each address arithmetic of the GETT layouts
+# (INDEXING = default, lean64, lean32). Compiles only; runs nothing on the GPU.
 #
 # usage (from the repository root, on the GPU machine):
-#   julia +1.11 --project=tuning tuning/dump-sass.jl <thesis configs.arrow> [TCs] [out dir] [extra kernel]
+#   julia +1.11 --project=tuning tuning/dump-sass.jl <thesis configs.arrow> [TCs] [out dir]
 #
-# TCs defaults to 12,20,22,24; out dir to sass/; extra kernel to pipelined_async_4. Writes
-# tc<N>-<label>.ptx and .sass per configuration, and prints the SASS opcode counts.
+# TCs defaults to 12,20,22,24; out dir to sass/. Writes tc<N>-<indexing>.sass per
+# configuration.
 
 using CUDA, GemmKernels, DataFrames
 import Arrow
@@ -15,7 +15,6 @@ import Arrow
 const CONFIGS = ARGS[1]
 const TCS = parse.(Int, split(get(ARGS, 2, "12,20,22,24"), ','))
 const OUT = get(ARGS, 3, "sass")
-const EXTRA_KERNEL = get(ARGS, 4, "pipelined_async_4")
 include(joinpath(@__DIR__, "wmma-contraction.jl"))
 
 function nvdisasm()
@@ -38,11 +37,6 @@ function dump(problem, config, prefix)
         GemmKernels.Tensors.OVERRIDE_do_override = false
     end
     plan = args.plan.matmulPlan
-    try
-        open(io -> CUDA.code_ptx(io, plan.job), "$prefix.ptx", "w")
-    catch err
-        @warn "no PTX for $prefix" exception = err
-    end
     sass = try
         sprint(io -> CUDA.code_sass(io, plan.job))
     catch err
@@ -54,14 +48,7 @@ function dump(problem, config, prefix)
         read(`$tool -c $prefix.cubin`, String)
     end
     write("$prefix.sass", sass)
-    ops = Dict{String,Int}()
-    for m in eachmatch(r"^\s*/\*[0-9a-f]+\*/\s+(?:@!?U?P\w+\s+)?([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*)"m, sass)
-        op = first(split(m.captures[1], '.'))
-        ops[op] = get(ops, op, 0) + 1
-    end
-    top = sort(collect(ops); by = last, rev = true)
-    println("  $prefix: $(sum(values(ops); init = 0)) SASS instructions; ",
-            join(("$k $v" for (k, v) in first(top, 14)), ", "))
+    println("  $prefix: $(count(l -> occursin(r"^\s+[A-Z@]", l), split(sass, '\n'))) lines of SASS")
     foreach(CUDA.unsafe_free!, data)
 end
 
@@ -75,7 +62,8 @@ for tc in TCS
     nrow(sel) == 1 || (@warn "TC$tc: $(nrow(sel)) configurations; skipped"; continue)
     thesis = NamedTuple(first(sel))
     println("TC$tc: $(repr_row(thesis))")
-    dump(problem, thesis, joinpath(OUT, "tc$tc-thesis"))
-    dump(problem, merge(thesis, (; kernel_str = EXTRA_KERNEL)), joinpath(OUT, "tc$tc-$EXTRA_KERNEL"))
+    for indexing in ("default", "lean64", "lean32")
+        dump(problem, merge(thesis, (; INDEXING = indexing)), joinpath(OUT, "tc$tc-$indexing"))
+    end
 end
 println("written to $OUT/")
