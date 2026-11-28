@@ -12,7 +12,7 @@
 # the thesis configuration, the same with pipelined_async_3, and the best variant found so
 # far for TC12/20/22/24, each with both address arithmetics of the GETT layouts
 # (INDEXING = default, lean32). With set = edge, the variants are the thesis configuration
-# with both edges (EDGE = pad, mask) and both address arithmetics. Like tune.jl, compiling and profiling happen
+# with both edges (EDGE = pad, partial) and both address arithmetics. Like tune.jl, compiling and profiling happen
 # in separate remote calls: compiling after CUDA.@profile within the same call fails with
 # CUDA.jl 5.11.
 
@@ -101,7 +101,7 @@ function indexing_variants(tc)
 end
 
 edge_variants(tc) = Any[v("thesis, $e, $ix"; EDGE = e, INDEXING = ix)
-                        for e in ("pad", "mask") for ix in ("default", "lean32")]
+                        for e in ("pad", "partial") for ix in ("default", "lean32")]
 
 const WORKER_CODE = quote
     device_time(prof) = (events = DataFrame(prof.device); sum(events.stop .- events.start))

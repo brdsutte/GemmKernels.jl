@@ -84,7 +84,7 @@ for tc in TCS
     nrow(sel) == 1 || (@warn "TC$tc: $(nrow(sel)) configurations; skipped"; continue)
     config = NamedTuple(first(sel))
     println("TC$tc: $(repr_row(config))")
-    for (edge, indexing) in (("pad", "default"), ("pad", "lean32"), ("mask", "lean32"))
+    for (edge, indexing) in (("pad", "default"), ("pad", "lean32"), ("partial", "lean32"))
         variant = merge(config, (; EDGE = edge, INDEXING = indexing))
         data = allocate_data(problem)
         initialize_data(problem, data...)

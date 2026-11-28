@@ -16,7 +16,7 @@
 #
 # With GK_PROFILE_INDEXING=default,lean32, each contraction's configuration is profiled once
 # per address arithmetic of the GETT layouts, in ranges "TC<n> ours default" etc. Likewise
-# GK_PROFILE_EDGE=pad,mask profiles it with padding and with partial edge tiles; with both,
+# GK_PROFILE_EDGE=pad,partial profiles it with padding and with partial edge tiles; with both,
 # every combination is profiled ("TC<n> ours lean32 mask" etc.).
 #
 # Nsight Compute locks the clocks to the base clock by default (--clock-control base), so

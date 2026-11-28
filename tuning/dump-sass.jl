@@ -8,7 +8,7 @@
 #
 # TCs defaults to 12,20,22,24; out dir to sass/. Writes tc<N>-<indexing>.sass per
 # configuration, and prints its registers per thread and local memory (spills). With
-# GK_DUMP_EDGE=pad,mask, each is dumped with padding and with partial edge tiles
+# GK_DUMP_EDGE=pad,partial, each is dumped with padding and with partial edge tiles
 # (tc<N>-<indexing>-<edge>.sass).
 
 using CUDA, GemmKernels, DataFrames

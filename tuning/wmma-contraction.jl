@@ -99,13 +99,13 @@ end
 const INDEXING_VALUES = String.(strip.(split(get(ENV, "GK_INDEXING", "default,lean32"), ',')))
 
 # How the M and N dimensions are covered when they are not multiples of the block shape
-# (GETTPlan's `edge`): "pad" (pad modes until they are, as before) or "mask" (partial edge
+# (GETTPlan's `edge`): "pad" (pad modes until they are, as before) or "partial" (partial edge
 # tiles: the layouts skip the stores beyond the edge and clamp the loads, so only K is padded;
 # see GETTLayout.GETTLayoutMasked). Neither is faster for every contraction (with the thesis
-# configurations on an RTX 6000 Ada, "mask" made 9 of 11 TCCG contractions 4-27% faster, but
+# configurations on an RTX 6000 Ada, "partial" made 9 of 11 TCCG contractions 4-27% faster, but
 # TC12 and TC13, which gain no tiles, 1-3% slower), so both are tuned (GK_EDGE; "pad"
 # restores the search space from before).
-const EDGE_VALUES = String.(strip.(split(get(ENV, "GK_EDGE", "pad,mask"), ',')))
+const EDGE_VALUES = String.(strip.(split(get(ENV, "GK_EDGE", "pad,partial"), ',')))
 
 function config_iterator(problem)
     param_product = shuffle_product(
@@ -212,7 +212,7 @@ function precheck_config(config; max_shmem)
     # createGETTContractionPlan: known edge handling. The tensors are padded as `prepare` pads
     # them: with partial edge tiles only K is (setUpGETTKernel also requires M and N to be
     # multiples of the copy tiles, which is left to the worker: in the TCCG suite they are)
-    EDGE in ("pad", "mask") || return rejected
+    EDGE in ("pad", "partial") || return rejected
     multiples = Configs.padding_multiples(BLOCK_M, BLOCK_N, BLOCK_K, EDGE)
     # plan_matmul: split-K needs singlestage or an async kernel, and at most one part per K-tile
     if SPLIT_K != 1

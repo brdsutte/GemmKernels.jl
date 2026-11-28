@@ -274,11 +274,11 @@ function createGETTContractionPlan(desc::ContractionDescriptor; indexing::Symbol
         K = prod(desc.descA.extent[dimensionsAK]),
     )
 
-    # Partial edge tiles (edge = :mask): the M and N dimensions need not be multiples of the
+    # Partial edge tiles (edge = :partial): the M and N dimensions need not be multiples of the
     # block shape; the layouts skip the stores of the tiles beyond them, and clamp their loads
     # (see GETTLayout.GETTLayoutMasked).
-    edge in (:pad, :mask) || throw(ArgumentError("edge must be :pad or :mask, but is :$edge"))
-    boundsA, boundsB, boundsD = edge == :mask ?
+    edge in (:pad, :partial) || throw(ArgumentError("edge must be :pad or :partial, but is :$edge"))
+    boundsA, boundsB, boundsD = edge == :partial ?
         ((gemmShape.M, 0), (0, gemmShape.N), (gemmShape.M, gemmShape.N)) : ((0, 0), (0, 0), (0, 0))
 
     # 32-bit address arithmetic only works if every offset fits
@@ -421,13 +421,13 @@ function setUpGETTKernel(desc::ContractionDescriptor, operator,
     # Partial edge tiles: get_config does not check the masked layouts' dimensions. K must
     # still be a multiple of the block shape (the kernels' K loops assume it), and no thread's
     # copy tile may straddle the edge of M or N (the layouts mask whole tiles).
-    if edge == :mask
+    if edge == :partial
         (; M, N, K) = gemmConf.matmul_shape
         K % gemmConf.block_shape.K == 0 ||
-            throw(GemmKernels.ConfigError("With edge = :mask, K ($K) must still be a multiple of BLOCK_K ($(gemmConf.block_shape.K))"))
+            throw(GemmKernels.ConfigError("With edge = :partial, K ($K) must still be a multiple of BLOCK_K ($(gemmConf.block_shape.K))"))
         (M % gemmConf.mem_a_thread.M == 0 && M % gemmConf.mem_cd_thread.M == 0 &&
          N % gemmConf.mem_b_thread.N == 0 && N % gemmConf.mem_cd_thread.N == 0) ||
-            throw(GemmKernels.ConfigError("With edge = :mask, M ($M) and N ($N) must be multiples of the copy tiles ($(gemmConf.mem_a_thread), $(gemmConf.mem_b_thread), $(gemmConf.mem_cd_thread))"))
+            throw(GemmKernels.ConfigError("With edge = :partial, M ($M) and N ($N) must be multiples of the copy tiles ($(gemmConf.mem_a_thread), $(gemmConf.mem_b_thread), $(gemmConf.mem_cd_thread))"))
     end
 
     # The copies of the GETT layouts must not cross from one tensor mode into the next (see
