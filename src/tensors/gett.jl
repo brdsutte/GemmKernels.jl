@@ -13,6 +13,7 @@ OVERRIDE_cta_swizzle = nothing
 
 # the masked layouts handle dimensions that are not multiples of the block shape
 GemmKernels.require_tile_sized_global(::Type{<:GETTLayout.GETTLayoutMasked}) = false
+GemmKernels.require_tile_sized_global(::Type{<:GETTLayout.GETTLayoutClamped}) = false
 
 struct GETTPlan <: AbstractAlgorithmPlan
     gemmConf
@@ -274,10 +275,13 @@ function createGETTContractionPlan(desc::ContractionDescriptor; indexing::Symbol
         K = prod(desc.descA.extent[dimensionsAK]),
     )
 
-    # Partial edge tiles (edge = :mask): the M and N dimensions need not be multiples of the
-    # block shape; the layouts mask the tiles beyond them (see GETTLayout.GETTLayoutMasked).
-    edge in (:pad, :mask) || throw(ArgumentError("edge must be :pad or :mask, but is :$edge"))
-    boundsA, boundsB, boundsD = edge == :mask ?
+    # Partial edge tiles (edge = :mask or :clamp): the M and N dimensions need not be
+    # multiples of the block shape; the layouts mask the tiles beyond them (see
+    # GETTLayout.GETTLayoutMasked), or with :clamp only the stores, loading the last tile
+    # within the bounds instead (GETTLayout.GETTLayoutClamped).
+    edge in (:pad, :mask, :clamp) || throw(ArgumentError("edge must be :pad, :mask or :clamp, but is :$edge"))
+    clamp = edge == :clamp
+    boundsA, boundsB, boundsD = edge != :pad ?
         ((gemmShape.M, 0), (0, gemmShape.N), (gemmShape.M, gemmShape.N)) : ((0, 0), (0, 0), (0, 0))
 
     # 32-bit address arithmetic only works if every offset fits
@@ -292,17 +296,17 @@ function createGETTContractionPlan(desc::ContractionDescriptor; indexing::Symbol
         GETTLayout.createGETTLayout(desc.descA.dataType, desc.descA.extent,
                                     (dimensionsAM, dimensionsAK),
                                     isColMajorA, isLoadStridedA, strideOverA; indexing,
-                                    bounds = boundsA)
+                                    bounds = boundsA, clamp)
     TensorLayoutB =
         GETTLayout.createGETTLayout(desc.descB.dataType, desc.descB.extent,
                                     (dimensionsBK, dimensionsBN),
                                     isColMajorB, isLoadStridedB, strideOverB; indexing,
-                                    bounds = boundsB)
+                                    bounds = boundsB, clamp)
     TensorLayoutD =
         GETTLayout.createGETTLayout(desc.descD.dataType, desc.descD.extent,
                                     (dimensionsDM, dimensionsDN),
                                     isColMajorD, isStoreStridedD, strideOverD; indexing,
-                                    bounds = boundsD)
+                                    bounds = boundsD, clamp)
 
     return (
         gemmShape,
@@ -420,13 +424,13 @@ function setUpGETTKernel(desc::ContractionDescriptor, operator,
     # Partial edge tiles: get_config does not check the masked layouts' dimensions. K must
     # still be a multiple of the block shape (the kernels' K loops assume it), and no thread's
     # copy tile may straddle the edge of M or N (the layouts mask whole tiles).
-    if edge == :mask
+    if edge != :pad
         (; M, N, K) = gemmConf.matmul_shape
         K % gemmConf.block_shape.K == 0 ||
-            throw(GemmKernels.ConfigError("With edge = :mask, K ($K) must still be a multiple of BLOCK_K ($(gemmConf.block_shape.K))"))
+            throw(GemmKernels.ConfigError("With edge = :$edge, K ($K) must still be a multiple of BLOCK_K ($(gemmConf.block_shape.K))"))
         (M % gemmConf.mem_a_thread.M == 0 && M % gemmConf.mem_cd_thread.M == 0 &&
          N % gemmConf.mem_b_thread.N == 0 && N % gemmConf.mem_cd_thread.N == 0) ||
-            throw(GemmKernels.ConfigError("With edge = :mask, M ($M) and N ($N) must be multiples of the copy tiles ($(gemmConf.mem_a_thread), $(gemmConf.mem_b_thread), $(gemmConf.mem_cd_thread))"))
+            throw(GemmKernels.ConfigError("With edge = :$edge, M ($M) and N ($N) must be multiples of the copy tiles ($(gemmConf.mem_a_thread), $(gemmConf.mem_b_thread), $(gemmConf.mem_cd_thread))"))
     end
 
     return GETTPlan(gemmConf)

@@ -12,7 +12,8 @@
 # the thesis configuration, the same with pipelined_async_3, and the best variant found so
 # far for TC12/20/22/24, each with both address arithmetics of the GETT layouts
 # (INDEXING = default, lean32). With set = edge, the variants are the thesis configuration
-# with both edges (EDGE = pad, mask) and both address arithmetics. Like tune.jl, compiling and profiling happen
+# with both edges (EDGE = pad, mask) and both address arithmetics; with set = edge2 also
+# EDGE = clamp, and mask and clamp on padded tensors ("mask+pad", "clamp+pad"). Like tune.jl, compiling and profiling happen
 # in separate remote calls: compiling after CUDA.@profile within the same call fails with
 # CUDA.jl 5.11.
 
@@ -102,6 +103,11 @@ end
 
 edge_variants(tc) = Any[v("thesis, $e, $ix"; EDGE = e, INDEXING = ix)
                         for e in ("pad", "mask") for ix in ("default", "lean32")]
+
+# partial edge tiles with masked or clamped loads, and (for diagnosis) both on padded tensors
+edge2_variants(tc) = Any[v("thesis, $e, $ix"; EDGE = e, INDEXING = ix)
+                         for e in ("pad", "mask", "clamp", "mask+pad", "clamp+pad")
+                         for ix in ("default", "lean32")]
 
 const WORKER_CODE = quote
     device_time(prof) = (events = DataFrame(prof.device); sum(events.stop .- events.start))
@@ -199,7 +205,8 @@ function main()
         cutensor = remotecall_fetch(measure_baseline, w, SAMPLES)
         println("   cuTENSOR: $(round(cutensor * 1e6; digits=1)) μs")
 
-        for var in (SET == "indexing" ? indexing_variants(tc) : SET == "edge" ? edge_variants(tc) : variants(tc))
+        for var in (SET == "indexing" ? indexing_variants(tc) : SET == "edge" ? edge_variants(tc) :
+                    SET == "edge2" ? edge2_variants(tc) : variants(tc))
             (; label, overrides, split_k) = var
             config = merge(thesis, overrides)
             desc = repr_row(merge(config, (; SPLIT_K = split_k)))

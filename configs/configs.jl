@@ -688,9 +688,14 @@ function find_minimal_padding(extents, multiple)
 end
 
 # The multiples to pad the M, N and K dimensions to: the block shape, or with partial edge
-# tiles (EDGE = "mask") only K.
+# tiles (EDGE = "mask" or "clamp") only K. For diagnosis, EDGE = "mask+pad" or "clamp+pad"
+# uses the partial-edge-tile layouts on tensors padded as for "pad" (so that every tile is
+# within the bounds, and the data are laid out as with padding).
 padding_multiples(BLOCK_M, BLOCK_N, BLOCK_K, EDGE) =
-    EDGE == "mask" ? (M = 1, N = 1, K = BLOCK_K) : (M = BLOCK_M, N = BLOCK_N, K = BLOCK_K)
+    EDGE in ("mask", "clamp") ? (M = 1, N = 1, K = BLOCK_K) : (M = BLOCK_M, N = BLOCK_N, K = BLOCK_K)
+
+# the plan's `edge` for the configs' EDGE
+edge_symbol(EDGE) = Symbol(first(split(EDGE, '+')))
 
 function pad_extents(extents, modes, multiples=(M=512,N=512,K=128))
     padded_extents = [extents...]
@@ -1075,7 +1080,7 @@ function prepare(tc::TensorContraction, a, b, c, d;
     @assert tc.a_type == tc.b_type == tc.c_type == tc.d_type
     data_type = tc.a_type
 
-    # get padded tensors (with partial edge tiles, EDGE = "mask", only K is padded)
+    # get padded tensors (with partial edge tiles, EDGE = "mask" or "clamp", only K is padded)
     padded_extents = pad_extents(tc.extents, tc.modes, padding_multiples(BLOCK_M, BLOCK_N, BLOCK_K, EDGE))
     padded_a = padded_view(a, padded_extents[tc.modes[2]])
     padded_b = padded_view(b, padded_extents[tc.modes[3]])
@@ -1149,7 +1154,7 @@ function prepare(tc::TensorContraction, a, b, c, d;
             kernel = kernel,
             splitK = SPLIT_K,
             indexing = Symbol(INDEXING),
-            edge = Symbol(EDGE)
+            edge = edge_symbol(EDGE)
         )
     finally
         GemmKernels.Tensors.OVERRIDE_do_override = false
