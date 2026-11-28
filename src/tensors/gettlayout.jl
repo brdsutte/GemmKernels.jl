@@ -364,6 +364,10 @@ Base.@propagate_inbounds @inline function Layout.store!(
     return
 end
 
+# the register fragments of the kernels that copy through registers
+@inline Layout.fragtype(::Type{GETTLayoutMasked{T, L, bound1, bound2}}, tile_size::NamedTuple) where {T, L, bound1, bound2} =
+    Layout.fragtype(L, tile_size)
+
 # Asynchronous copies: the tiles beyond the edge are zero-filled by cp.async itself (a source
 # size of 0 bytes), from the workspace's first element as a valid dummy address.
 Layout.contiguous_tiles(::Type{GETTLayoutMasked{T, L, bound1, bound2}}) where {T, L, bound1, bound2} =

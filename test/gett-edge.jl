@@ -24,9 +24,10 @@ isdefined(@__MODULE__, :Configs) || include("../configs/configs.jl")
 
         # (name, extents, block shape, PERM_M, PERM_N, PERM_K, A col-major, B col-major):
         # a GEMM-like contraction with M = 200 and N = 136 (64-wide tiles: 3.1 and 2.1 tiles),
-        # and TCCG TC20's pattern with M = 576 and N = 288 (128-wide tiles: 4.5 and 2.25)
+        # and TCCG TC20's pattern with M = N = 576 (128-wide tiles: 4.5). Every mode is a
+        # multiple of 8, as the vectorised copies of the GETT layouts require.
         contractions = [("1.2-1.3-3.2", [200, 136, 128], (64, 64, 32), [1], [2], [3], true, true),
-                        ("1.2.3.4-1.5.2.6-4.6.3.5", [24, 24, 24, 12, 16, 16], (128, 128, 32),
+                        ("1.2.3.4-1.5.2.6-4.6.3.5", [24, 24, 24, 24, 16, 16], (128, 128, 32),
                          [1, 2], [4, 3], [6, 5], true, false)]
 
         run_contraction(problem, params) = begin
