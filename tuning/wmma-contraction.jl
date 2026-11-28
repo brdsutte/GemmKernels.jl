@@ -118,7 +118,69 @@ const INDEXING_VALUES = String.(strip.(split(get(ENV, "GK_INDEXING", "default,le
 # restores the search space from before).
 const EDGE_VALUES = String.(strip.(split(get(ENV, "GK_EDGE", "pad,partial"), ',')))
 
-function config_iterator(problem)
+# The order in which configurations are tried (GK_STRATEGY): "random" (the default: a random
+# permutation of the whole space), or "model" (first the configurations a cost model rates
+# best, with every 10th one taken from the random order, then the rest in random order; see
+# tuning/MODEL-ORDER.md).
+const STRATEGY = get(ENV, "GK_STRATEGY", "random")
+STRATEGY in ("random", "model") || error("GK_STRATEGY must be random or model, not $STRATEGY")
+
+include(joinpath(@__DIR__, "model-order.jl"))
+
+config_iterator(problem) = STRATEGY == "model" ? ModelOrderIterator(problem, random_config_iterator(problem)) :
+                                                 random_config_iterator(problem)
+
+const SWIZZLES = ["horizontal-1", "horizontal-2", "horizontal-4", "horizontal-8", "horizontal-16",
+                  "vertical-1", "vertical-2", "vertical-4", "vertical-8", "vertical-16"]
+
+# the GPU, as the cost model sees it
+function model_gpu()
+    dev = device()
+    attr(a) = CUDA.attribute(dev, a)
+    ModelOrder.GPUInfo(; sms = attr(CUDA.DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT),
+                         smem_per_sm = attr(CUDA.DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR),
+                         smem_per_block = attr(CUDA.DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN),
+                         regs_per_sm = attr(CUDA.DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_MULTIPROCESSOR),
+                         max_threads_per_sm = attr(CUDA.DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR),
+                         max_blocks_per_sm = attr(CUDA.DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_MULTIPROCESSOR),
+                         async = TUNE_ASYNC, max_tuple_splat = min(MAX_TUPLE_SPLAT, typemax(Int32)))
+end
+
+# The model's order, with every RANDOM_EVERY-th configuration from the random order. Its
+# length is that of the whole space (as tune.jl reports coverage); configurations it yields
+# twice are skipped by tune.jl.
+const RANDOM_EVERY = 10
+
+struct ModelOrderIterator{R}
+    problem::Any
+    random::R
+end
+
+Base.length(it::ModelOrderIterator) = length(it.random)
+
+function Base.iterate(it::ModelOrderIterator, state = nothing)
+    if state === nothing
+        gpu = model_gpu()
+        t = @elapsed candidates = ModelOrder.ordered_candidates(
+            it.problem.name, [it.problem.extents...];
+            kernels = KERNEL_STRINGS, split_k_values = split_k_values(it.problem),
+            indexing_values = INDEXING_VALUES, edge_values = EDGE_VALUES, swizzles = SWIZZLES,
+            gpu, valid = c -> precheck_config(c; max_shmem = gpu.smem_per_block) === nothing)
+        @info "Cost model: $(length(candidates)) configurations of $(it.problem.name) in order, in $(round(t; digits = 1)) s"
+        state = (candidates, 1, 0, nothing)
+    end
+    candidates, i, n, rstate = state
+    n += 1
+    # every RANDOM_EVERY-th, and after the model's list, from the random order
+    if n % RANDOM_EVERY == 0 || i > length(candidates)
+        r = rstate === nothing ? iterate(it.random) : iterate(it.random, rstate)
+        r === nothing && return nothing
+        return r[1], (candidates, i, n, r[2])
+    end
+    return candidates[i], (candidates, i + 1, n, rstate)
+end
+
+function random_config_iterator(problem)
     param_product = shuffle_product(
         2 .^ (3:9),
         2 .^ (3:9),
@@ -138,8 +200,7 @@ function config_iterator(problem)
         permutations(intersect(problem.modes[1], problem.modes[3])),
         permutations(intersect(problem.modes[2], problem.modes[3])),
 
-        ["horizontal-1", "horizontal-2", "horizontal-4", "horizontal-8", "horizontal-16",
-         "vertical-1", "vertical-2", "vertical-4", "vertical-8", "vertical-16"]
+        SWIZZLES
     )
 
     return ((;
