@@ -12,9 +12,11 @@
 # the thesis configuration, the same with pipelined_async_3, and the best variant found so
 # far for TC12/20/22/24, each with both address arithmetics of the GETT layouts
 # (INDEXING = default, lean32). With set = edge, the variants are the thesis configuration
-# with both edges (EDGE = pad, partial) and both address arithmetics. Like tune.jl, compiling and profiling happen
-# in separate remote calls: compiling after CUDA.@profile within the same call fails with
-# CUDA.jl 5.11.
+# with both edges (EDGE = pad, partial) and both address arithmetics. With set = asyncdb, the
+# thesis configuration and the async kernel with single and double-buffered fragments
+# (pipelined_async_<n> and pipelined_async_db_<n>), each with both address arithmetics.
+# Like tune.jl, compiling and profiling happen in separate remote calls: compiling after
+# CUDA.@profile within the same call fails with CUDA.jl 5.11.
 
 using Distributed
 
@@ -98,6 +100,22 @@ function indexing_variants(tc)
                        WARPS_M = 2, WARPS_N = 4, op16..., kernel_str = "pipelined_async_4"))
     return Any[v("$(b.label), $ix", b.split_k; b.overrides..., INDEXING = ix)
                for b in bases for ix in ("default", "lean32")]
+end
+
+# the async kernel with single and double-buffered fragments, at the thesis tile and (for
+# TC12/20/22/24) at 128 × 128 × 32 with 2 × 4 warps, against the thesis configuration
+function asyncdb_variants(tc)
+    list = Any[v("thesis, $ix"; INDEXING = ix) for ix in ("default", "lean32")]
+    for ix in ("default", "lean32"), k in ("pipelined_async_3", "pipelined_async_db_3")
+        push!(list, v("thesis, $k, $ix"; kernel_str = k, INDEXING = ix))
+    end
+    if tc in (12, 20, 22, 24)
+        for ix in ("default", "lean32"), k in ("pipelined_async_4", "pipelined_async_db_4")
+            push!(list, v("128×128×32, 2×4 warps, $k, $ix"; BLOCK_M = 128, BLOCK_N = 128, BLOCK_K = 32,
+                          WARPS_M = 2, WARPS_N = 4, op16..., kernel_str = k, INDEXING = ix))
+        end
+    end
+    return list
 end
 
 edge_variants(tc) = Any[v("thesis, $e, $ix"; EDGE = e, INDEXING = ix)
@@ -199,7 +217,8 @@ function main()
         cutensor = remotecall_fetch(measure_baseline, w, SAMPLES)
         println("   cuTENSOR: $(round(cutensor * 1e6; digits=1)) μs")
 
-        for var in (SET == "indexing" ? indexing_variants(tc) : SET == "edge" ? edge_variants(tc) : variants(tc))
+        for var in (SET == "indexing" ? indexing_variants(tc) : SET == "edge" ? edge_variants(tc) :
+                    SET == "asyncdb" ? asyncdb_variants(tc) : variants(tc))
             (; label, overrides, split_k) = var
             config = merge(thesis, overrides)
             desc = repr_row(merge(config, (; SPLIT_K = split_k)))

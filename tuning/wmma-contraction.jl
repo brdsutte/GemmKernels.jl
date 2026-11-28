@@ -69,11 +69,22 @@ function create_configs()
 end
 
 # All kernels the GPU supports: the asynchronous-copy kernels need sm_80 or later. Exclude
-# them with GEMMKERNELS_TUNE_ASYNC=0 (e.g. to reproduce sweeps that didn't have them).
+# them with GEMMKERNELS_TUNE_ASYNC=0 (e.g. to reproduce sweeps that didn't have them). The
+# async kernels come with 2-4 stages, with the fragments of A and B in single registers
+# (pipelined_async_<stages>) or double-buffered (pipelined_async_db_<stages>; see
+# Kernel.matmul_pipelined_async's `double_buffer`); GEMMKERNELS_TUNE_ASYNC_DB=0 leaves out
+# the latter.
 const TUNE_ASYNC = get(ENV, "GEMMKERNELS_TUNE_ASYNC", "1") != "0" &&
                    CUDA.functional() && CUDA.capability(device()) >= v"8.0"
+const TUNE_ASYNC_DB = TUNE_ASYNC && get(ENV, "GEMMKERNELS_TUNE_ASYNC_DB", "1") != "0"
 const KERNEL_STRINGS = vcat(["singlestage", "pipelined", "pipelined_ng"],
-                            TUNE_ASYNC ? ["pipelined_async_2", "pipelined_async_3", "pipelined_async_4"] : String[])
+                            TUNE_ASYNC ? ["pipelined_async_2", "pipelined_async_3", "pipelined_async_4"] : String[],
+                            TUNE_ASYNC_DB ? ["pipelined_async_db_2", "pipelined_async_db_3", "pipelined_async_db_4"] : String[])
+
+# The number of stages of an async kernel string (pipelined_async_<n> or
+# pipelined_async_db_<n>), and whether it double-buffers the fragments
+async_stages(str) = parse(Int, last(split(str, '_')))
+async_double_buffer(str) = startswith(str, "pipelined_async_db_")
 
 # Split-K (several thread blocks per output tile, each computing part of K) only helps when
 # there are too few output tiles to fill the GPU and K is long enough to divide: it is tried for
@@ -238,7 +249,7 @@ function precheck_config(config; max_shmem)
     end
     # plan_matmul: shared memory. A and B are Float16 (padding only adds), D is Float32.
     stages = kernel_str == "pipelined_ng" ? 2 :
-             startswith(kernel_str, "pipelined_async_") ? parse(Int, chopprefix(kernel_str, "pipelined_async_")) : 1
+             startswith(kernel_str, "pipelined_async_") ? async_stages(kernel_str) : 1
     shmem_lower_bound = max(4 * BLOCK_M * BLOCK_N, stages * 2 * (BLOCK_M * BLOCK_K + BLOCK_K * BLOCK_N))
     shmem_lower_bound > max_shmem && return rejected
 
@@ -319,7 +330,7 @@ function kernel_string_to_function(str)
     elseif str == "pipelined_ng"
         return Kernel.matmul_pipelined_ng
     elseif startswith(str, "pipelined_async_")
-        return Kernel.matmul_pipelined_async(parse(Int, chopprefix(str, "pipelined_async_")))
+        return Kernel.matmul_pipelined_async(async_stages(str); double_buffer = async_double_buffer(str))
     else
         error("Unknown kernel string: $str")
     end

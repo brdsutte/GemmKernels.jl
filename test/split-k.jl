@@ -38,7 +38,8 @@ end
 @testset "Split-K" begin
     if CUDA.functional()
         kernels = Any[Kernel.matmul_singlestage]
-        capability(device()) ≥ v"8.0" && push!(kernels, Kernel.matmul_pipelined_async(3))
+        capability(device()) ≥ v"8.0" && push!(kernels, Kernel.matmul_pipelined_async(3),
+                                                Kernel.matmul_pipelined_async(3; double_buffer = true))
 
         # K = 1024: 32 K-tiles; K = 160: 5 K-tiles, so with 4 parts (2, 2, 1, 0 K-tiles)
         # the last part is empty. C is non-zero, so it must be added exactly once.
