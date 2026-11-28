@@ -1,7 +1,7 @@
 # Dump the PTX and SASS of the kernels of chosen configurations, for inspecting the
 # generated code (e.g. the address arithmetic of the GETT layouts): by default the thesis's
 # best configuration of each given TC, with each address arithmetic of the GETT layouts
-# (INDEXING = default, lean64, lean32). Compiles only; runs nothing on the GPU.
+# (INDEXING = default, lean32). Compiles only; runs nothing on the GPU.
 #
 # usage (from the repository root, on the GPU machine):
 #   julia +1.11 --project=tuning tuning/dump-sass.jl <thesis configs.arrow> [TCs] [out dir]
@@ -62,7 +62,7 @@ for tc in TCS
     nrow(sel) == 1 || (@warn "TC$tc: $(nrow(sel)) configurations; skipped"; continue)
     thesis = NamedTuple(first(sel))
     println("TC$tc: $(repr_row(thesis))")
-    for indexing in ("default", "lean64", "lean32")
+    for indexing in ("default", "lean32")
         dump(problem, merge(thesis, (; INDEXING = indexing)), joinpath(OUT, "tc$tc-$indexing"))
     end
 end

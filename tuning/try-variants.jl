@@ -10,8 +10,8 @@
 #
 # TCs defaults to 9,10,11,12,13,14,19,20,22,24. With set = indexing, the variants are instead
 # the thesis configuration, the same with pipelined_async_3, and the best variant found so
-# far for TC12/20/22/24, each with the three address arithmetics of the GETT layouts
-# (INDEXING = default, lean64, lean32). Like tune.jl, compiling and profiling happen
+# far for TC12/20/22/24, each with both address arithmetics of the GETT layouts
+# (INDEXING = default, lean32). Like tune.jl, compiling and profiling happen
 # in separate remote calls: compiling after CUDA.@profile within the same call fails with
 # CUDA.jl 5.11.
 
@@ -96,7 +96,7 @@ function indexing_variants(tc)
         push!(bases, v("128×128×32, 2×4 warps, async 4"; BLOCK_M = 128, BLOCK_N = 128, BLOCK_K = 32,
                        WARPS_M = 2, WARPS_N = 4, op16..., kernel_str = "pipelined_async_4"))
     return Any[v("$(b.label), $ix", b.split_k; b.overrides..., INDEXING = ix)
-               for b in bases for ix in ("default", "lean64", "lean32")]
+               for b in bases for ix in ("default", "lean32")]
 end
 
 const WORKER_CODE = quote
