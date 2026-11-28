@@ -212,7 +212,7 @@ function precheck_config(config; max_shmem)
     # createGETTContractionPlan: known edge handling. The tensors are padded as `prepare` pads
     # them: with partial edge tiles only K is (setUpGETTKernel also requires M and N to be
     # multiples of the copy tiles, which is left to the worker: in the TCCG suite they are)
-    EDGE in ("pad", "mask", "clamp") || return rejected
+    EDGE in ("pad", "mask") || return rejected
     multiples = Configs.padding_multiples(BLOCK_M, BLOCK_N, BLOCK_K, EDGE)
     # plan_matmul: split-K needs singlestage or an async kernel, and at most one part per K-tile
     if SPLIT_K != 1

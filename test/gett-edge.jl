@@ -4,9 +4,8 @@ using GemmKernels.Tensors.GETTLayout
 
 isdefined(@__MODULE__, :Configs) || include("../configs/configs.jl")
 
-# Partial edge tiles (createGETTLayout's `bounds`, the configs' EDGE = "mask" or "clamp"): M and
-# N need not be multiples of the block shape; the layouts mask the tiles beyond them (or, with
-# "clamp", only the stores, loading the last tile within the bounds instead).
+# Partial edge tiles (createGETTLayout's `bounds`, the configs' EDGE = "mask"): M and N need
+# not be multiples of the block shape; the layouts mask the tiles beyond them.
 
 @testset "GETT partial edge tiles" begin
     @testcase "layout types" begin
@@ -17,15 +16,6 @@ isdefined(@__MODULE__, :Configs) || include("../configs/configs.jl")
         @test !GemmKernels.require_tile_sized_global(masked)
         @test GETTLayout.createGETTLayout(args...; indexing = :lean32, bounds = (0, 5184)) <:
               GETTLayout.GETTLayoutMasked{Float16, <:GETTLayout.GETTLayoutLeanColMajor}
-        clamped = GETTLayout.createGETTLayout(args...; bounds = (5184, 0), clamp = true)
-        @test clamped <: GETTLayout.GETTLayoutClamped{Float16, GETTLayout.createGETTLayout(args...), 5184, 0}
-        @test !GemmKernels.require_tile_sized_global(clamped)
-        # clamping moves tiles beyond the bound back to the last tile within it
-        tile = GemmKernels.Tiling.Tile{(M = 8, K = 1), (:M, :K), Tuple{Int, Int}}((M = 5184, K = 3), (M = 8, K = 0))
-        @test GETTLayout.clamp_tile(clamped, tile).base.M + 8 == 5176
-        @test GETTLayout.clamp_tile(clamped, tile).base.K == 3
-        tile = GemmKernels.Tiling.Tile{(M = 8, K = 1), (:M, :K), Tuple{Int, Int}}((M = 64, K = 3), (M = 8, K = 0))
-        @test GETTLayout.clamp_tile(clamped, tile) == tile
     end
 
     if CUDA.functional()
@@ -55,7 +45,7 @@ isdefined(@__MODULE__, :Configs) || include("../configs/configs.jl")
         end
 
         @testcase "$name, $kernel, $edge, indexing = $indexing" for (name, extents, (BM, BN, BK), PERM_M, PERM_N, PERM_K, a_col, b_col) in contractions,
-                                                                   kernel in kernels, edge in ["pad", "mask", "clamp"],
+                                                                   kernel in kernels, edge in ["pad", "mask"],
                                                                    indexing in ["default", "lean32"]
             problem = WMMATensorContraction(; name, extents, data_type = Float16, compute_type = Float16,
                                               accumulate_type = Float32, zero_c = true)
@@ -71,12 +61,12 @@ isdefined(@__MODULE__, :Configs) || include("../configs/configs.jl")
             problem = WMMATensorContraction(; name = "1.2-1.3-3.2", extents = [200, 136, 512],
                                               data_type = Float16, compute_type = Float16,
                                               accumulate_type = Float32, zero_c = true)
-            for split in [2, 4], edge in ["mask", "clamp"]
+            for split in [2, 4]
                 params = (; BLOCK_M = 64, BLOCK_N = 64, BLOCK_K = 32, WARPS_M = 2, WARPS_N = 2,
                             OP_M = 16, OP_N = 16, OP_K = 16, kernel = Kernel.matmul_singlestage,
                             is_A_col_major = true, is_B_col_major = true, is_D_col_major = true,
                             PERM_M = [1], PERM_N = [2], PERM_K = [3], cta_swizzle = CTASwizzle.Identity,
-                            EDGE = edge, SPLIT_K = split)
+                            EDGE = "mask", SPLIT_K = split)
                 @test run_contraction(problem, params)
             end
         end

@@ -387,54 +387,6 @@ Base.@propagate_inbounds @inline function Layout.copy_async!(
     return
 end
 
-# A variant that loads without branches (edge = :clamp): instead of masking the copy tiles
-# beyond M or N, it loads the last copy tile within them again. That is safe: a row of A
-# beyond M (a column of B beyond N) only contributes to rows (columns) of D beyond M (N),
-# which are never stored. Stores are masked as for GETTLayoutMasked. The loads then need no
-# zero values and no branch, which can keep the generated code closer to that of the padded
-# layouts (with masked loads, LLVM restructures the pipelined kernels' main loops, and
-# pipelined_ng runs out of registers).
-abstract type GETTLayoutClamped{T, L, bound1, bound2} <: Layout.LayoutBase{T} end
-
-# the tile moved back to the last copy tile within the bounds (copy tiles never straddle
-# them, as setUpGETTKernel checks)
-@inline function clamp_tile(::Type{GETTLayoutClamped{T, L, bound1, bound2}},
-                            tile::Tile{size, names, TT}) where {T, L, bound1, bound2, size, names, TT}
-    G1 = tile.base[1] + tile.offset[1]
-    G2 = tile.base[2] + tile.offset[2]
-    C1 = bound1 == 0 ? G1 : min(G1, oftype(G1, bound1 - size[1]))
-    C2 = bound2 == 0 ? G2 : min(G2, oftype(G2, bound2 - size[2]))
-    return Tile{size, names, TT}(NamedTuple{names}((C1 - tile.offset[1], C2 - tile.offset[2])), tile.offset)
-end
-
-Base.@propagate_inbounds @inline Layout.load(
-        C::Type{GETTLayoutClamped{T, L, bound1, bound2}}, workspace, tile::Tile
-    ) where {T, L, bound1, bound2} =
-    Layout.load(L, workspace, clamp_tile(C, tile))
-
-Base.@propagate_inbounds @inline function Layout.store!(
-        ::Type{GETTLayoutClamped{T, L, bound1, bound2}}, workspace, value, tile::Tile
-    ) where {T, L, bound1, bound2}
-    if in_bounds(GETTLayoutMasked{T, L, bound1, bound2}, tile)
-        Layout.store!(L, workspace, value, tile)
-    end
-    return
-end
-
-@inline Layout.fragtype(::Type{GETTLayoutClamped{T, L, bound1, bound2}}, tile_size::NamedTuple) where {T, L, bound1, bound2} =
-    Layout.fragtype(L, tile_size)
-
-Layout.contiguous_tiles(::Type{GETTLayoutClamped{T, L, bound1, bound2}}) where {T, L, bound1, bound2} =
-    Layout.contiguous_tiles(L)
-
-Base.@propagate_inbounds @inline function Layout.copy_async!(
-        C::Type{GETTLayoutClamped{T, L, bound1, bound2}}, shared_layout,
-        shared_workspace, global_workspace, shared_tile::Tile, global_tile::Tile
-    ) where {T, L, bound1, bound2}
-    Layout.copy_async!(L, shared_layout, shared_workspace, global_workspace, shared_tile,
-                       clamp_tile(C, global_tile))
-end
-
 # The address arithmetic of the GETT layouts (see GETTLayoutLean):
 #   :default   the original layouts
 #   :lean32    unsigned 32-bit, without the redundant modulos (tensors < 2^31 elements)
@@ -449,7 +401,6 @@ function createGETTLayout(
     strideOver::Union{Vector{Int}, Nothing} = nothing;
     indexing::Symbol = :default,
     bounds::Tuple{Int, Int} = (0, 0),
-    clamp::Bool = false,
 )
     (
         divT1, divT2,
@@ -479,10 +430,8 @@ function createGETTLayout(
         end
     end
 
-    # partial edge tiles: mask the dimensions with a non-zero bound (or, with `clamp`, mask
-    # only the stores, and load the last tile within the bounds instead)
-    bounds == (0, 0) && return L
-    return clamp ? GETTLayoutClamped{DT, L, bounds[1], bounds[2]} : GETTLayoutMasked{DT, L, bounds[1], bounds[2]}
+    # partial edge tiles: mask the dimensions with a non-zero bound
+    return bounds == (0, 0) ? L : GETTLayoutMasked{DT, L, bounds[1], bounds[2]}
 end
 
 end
