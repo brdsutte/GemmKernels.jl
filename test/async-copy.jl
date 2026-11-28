@@ -90,6 +90,25 @@ isdefined(@__MODULE__, :Configs) || include("../configs/configs.jl")
             @test isapprox(result, reference; rtol = sqrt(eps(Float16)))
         end
 
+        # BLOCK_K = OP_K: one MMA step per K-tile, so the double-buffered fragments must carry
+        # over to the next K-tile in the other buffer (found by the tuner on TC1, where all
+        # double-buffered configurations with BLOCK_K = 16 gave wrong results).
+        @testcase "GEMM, one step per K-tile, $(stages) stages$(double_buffer ? ", double-buffered" : ""), K = $(K)" for
+                stages in [2, 3, 4], double_buffer in [false, true], K in [16, 32, 48, 1024]
+            problem = WMMAMatrixMultiplication(; M = 256, N = 128, K, AB_type = Float16, CD_type = Float32,
+                                                 zero_c = false)
+            data = allocate_data(problem)
+            initialize_data(problem, data...)
+            reference = Array(calculate_reference(problem, data...))
+
+            args = prepare(problem; BLOCK_M = 64, BLOCK_N = 64, BLOCK_K = 16, WARPS_M = 2, WARPS_N = 2,
+                                    OP_M = 16, OP_N = 16, OP_K = 16, zero_c = false,
+                                    kernel = Kernel.matmul_pipelined_async(stages; double_buffer))
+            initialize_data(problem, data...)
+            result = Array(execute(problem, data...; args...))
+            @test isapprox(result, reference; rtol = sqrt(eps(Float16)))
+        end
+
         @testcase "Tensor contraction, $(stages) stages$(double_buffer ? ", double-buffered" : "")" for stages in [2, 3, 4],
                                                                                                     double_buffer in [false, true]
             problem = WMMATensorContraction(; name = "1.2.3-2.4.1-4.3", extents = [312, 312, 24, 312],
