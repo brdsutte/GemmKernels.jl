@@ -758,17 +758,18 @@ function (::MatmulPipelinedAsync{STAGES})(conf::GemmKernels.Config, a, b, c, d,
     b_frags = LocalArray{Tuple{2, num_fragments_n}, Operator.fragtype_b(conf.operator, conf.shared_b_layout)}(undef)
     warp_tile_mn = subdivide(block_tile, Tile(conf.compute_warp), warpId, conf.warps_per_block)
 
-    # (it returns the updated fragment arrays: a closure must not rebind captured variables)
+    # (it returns the updated fragment arrays, and names its tile step_tile: a closure must
+    # not assign to variables of the kernel, which would box them)
     @inline function load_frags(a_frags, b_frags, buf, stage, warp_k)
         shmem_a_stage = view(shmem_a, :, :, stage)
         shmem_b_stage = view(shmem_b, :, :, stage)
-        warp_tile = translate_offset(warp_tile_mn, (M = 0, N = 0, K = warp_k))
+        step_tile = translate_offset(warp_tile_mn, (M = 0, N = 0, K = warp_k))
         @loopinfo unroll for i = 1 : num_fragments_m
-            a_tile = translate_offset(warp_tile.MK, (M = (i-1)*conf.compute_op_shape.M, K = 0))
+            a_tile = translate_offset(step_tile.MK, (M = (i-1)*conf.compute_op_shape.M, K = 0))
             @inbounds @immutable a_frags[buf, i] = transf_sh2rf_a(Operator.load_a(conf.operator, conf.shared_a_layout, shmem_a_stage, a_tile), a_tile)
         end
         @loopinfo unroll for j = 1 : num_fragments_n
-            b_tile = translate_offset(warp_tile.KN, (K = 0, N = (j-1)*conf.compute_op_shape.N))
+            b_tile = translate_offset(step_tile.KN, (K = 0, N = (j-1)*conf.compute_op_shape.N))
             @inbounds @immutable b_frags[buf, j] = transf_sh2rf_b(Operator.load_b(conf.operator, conf.shared_b_layout, shmem_b_stage, b_tile), b_tile)
         end
         return a_frags, b_frags
