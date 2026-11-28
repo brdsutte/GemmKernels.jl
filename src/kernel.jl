@@ -752,46 +752,54 @@ function (::MatmulPipelinedAsync{STAGES, false})(conf::GemmKernels.Config, a, b,
         Layout.cp_async_commit()
     end
 
-    for kt = 0 : NUM_K_TILES - 1
-        # Before this point, STAGES - 1 + kt groups were committed; K-tile kt is in group kt,
-        # so it has arrived once at most STAGES - 2 groups are still pending. The barrier
-        # makes the copies of all threads visible, and guarantees that every warp is done
-        # computing on K-tile kt - 1, whose buffer we refill below.
-        Layout.cp_async_wait(Val(STAGES - 2))
-        sync_threads()
+    # The K-tile loop is unrolled by STAGES: K-tile kt uses stage buffer s = kt % STAGES + 1,
+    # which in the unrolled body is a compile-time constant, so the addresses of the copies
+    # and the fragment loads need no division and can be computed once instead of per K-tile.
+    for kt0 = 0 : STAGES : NUM_K_TILES - 1
+        @loopinfo unroll for s = 1 : STAGES
+            kt = kt0 + s - 1
+            if kt < NUM_K_TILES
+                # Before this point, STAGES - 1 + kt groups were committed; K-tile kt is in group kt,
+                # so it has arrived once at most STAGES - 2 groups are still pending. The barrier
+                # makes the copies of all threads visible, and guarantees that every warp is done
+                # computing on K-tile kt - 1, whose buffer we refill below.
+                Layout.cp_async_wait(Val(STAGES - 2))
+                sync_threads()
 
-        kt_next = kt + STAGES - 1
-        if kt_next < NUM_K_TILES
-            copy_tile(kt_next, kt_next % STAGES + 1)
-        end
-        Layout.cp_async_commit()
+                kt_next = kt + STAGES - 1
+                if kt_next < NUM_K_TILES
+                    copy_tile(kt_next, mod1(s - 1, STAGES))
+                end
+                Layout.cp_async_commit()
 
-        stage = kt % STAGES + 1
-        shmem_a_stage = view(shmem_a, :, :, stage)
-        shmem_b_stage = view(shmem_b, :, :, stage)
+                stage = s
+                shmem_a_stage = view(shmem_a, :, :, stage)
+                shmem_b_stage = view(shmem_b, :, :, stage)
 
-        # (3.3) Calculate a compute_warp.M x compute_warp.N tile of D, using a compute_warp.M x compute_warp.N x compute_warp.K operation
-        @loopinfo unroll for warp_tile = parallelise(block_tile, Tile(conf.compute_warp), warpId, conf.warps_per_block)
-            # (3.3.1) Load a compute_warp.M x compute_warp.K tile of A from shared memory into registers
-            a_frags = LocalArray{Tuple{num_fragments_m}, Operator.fragtype_a(conf.operator, conf.shared_a_layout)}(undef)
+                # (3.3) Calculate a compute_warp.M x compute_warp.N tile of D, using a compute_warp.M x compute_warp.N x compute_warp.K operation
+                @loopinfo unroll for warp_tile = parallelise(block_tile, Tile(conf.compute_warp), warpId, conf.warps_per_block)
+                    # (3.3.1) Load a compute_warp.M x compute_warp.K tile of A from shared memory into registers
+                    a_frags = LocalArray{Tuple{num_fragments_m}, Operator.fragtype_a(conf.operator, conf.shared_a_layout)}(undef)
 
-            @loopinfo unroll for i = 1 : num_fragments_m
-                a_tile = translate_offset(warp_tile.MK, (M = (i-1)*conf.compute_op_shape.M, K = 0))
-                @inbounds @immutable a_frags[i] = transf_sh2rf_a(Operator.load_a(conf.operator, conf.shared_a_layout, shmem_a_stage, a_tile), a_tile)
-            end
+                    @loopinfo unroll for i = 1 : num_fragments_m
+                        a_tile = translate_offset(warp_tile.MK, (M = (i-1)*conf.compute_op_shape.M, K = 0))
+                        @inbounds @immutable a_frags[i] = transf_sh2rf_a(Operator.load_a(conf.operator, conf.shared_a_layout, shmem_a_stage, a_tile), a_tile)
+                    end
 
-            # (3.3.2) Load a compute_warp.K x compute_warp.N tile of B from shared memory into registers
-            b_frags = LocalArray{Tuple{num_fragments_n}, Operator.fragtype_b(conf.operator, conf.shared_b_layout)}(undef)
+                    # (3.3.2) Load a compute_warp.K x compute_warp.N tile of B from shared memory into registers
+                    b_frags = LocalArray{Tuple{num_fragments_n}, Operator.fragtype_b(conf.operator, conf.shared_b_layout)}(undef)
 
-            @loopinfo unroll for j = 1 : num_fragments_n
-                b_tile = translate_offset(warp_tile.KN, (K = 0, N = (j-1)*conf.compute_op_shape.N))
-                @inbounds @immutable b_frags[j] = transf_sh2rf_b(Operator.load_b(conf.operator, conf.shared_b_layout, shmem_b_stage, b_tile), b_tile)
-            end
+                    @loopinfo unroll for j = 1 : num_fragments_n
+                        b_tile = translate_offset(warp_tile.KN, (K = 0, N = (j-1)*conf.compute_op_shape.N))
+                        @inbounds @immutable b_frags[j] = transf_sh2rf_b(Operator.load_b(conf.operator, conf.shared_b_layout, shmem_b_stage, b_tile), b_tile)
+                    end
 
-            # (3.3.3) Compute a compute_warp.M x compute_warp.N x compute_warp.K matrix product within one warp
-            @loopinfo unroll for i = 1 : num_fragments_m
-                @loopinfo unroll for j = 1 : num_fragments_n
-                    @inbounds @immutable c_frags[i, j] = Operator.mma(conf.operator, a_frags[i], b_frags[j], c_frags[i, j])
+                    # (3.3.3) Compute a compute_warp.M x compute_warp.N x compute_warp.K matrix product within one warp
+                    @loopinfo unroll for i = 1 : num_fragments_m
+                        @loopinfo unroll for j = 1 : num_fragments_n
+                            @inbounds @immutable c_frags[i, j] = Operator.mma(conf.operator, a_frags[i], b_frags[j], c_frags[i, j])
+                        end
+                    end
                 end
             end
         end
@@ -958,41 +966,49 @@ function (::MatmulPipelinedAsync{STAGES, true})(conf::GemmKernels.Config, a, b, 
         a_frags, b_frags = load_frags(a_frags, b_frags, 1, 1, 0)
     end
 
-    for kt = 0 : NUM_K_TILES - 1
-        stage = kt % STAGES + 1
+    # The K-tile loop is unrolled by STAGES: K-tile kt uses stage buffer s = kt % STAGES + 1,
+    # which in the unrolled body is a compile-time constant, so the addresses of the copies
+    # and the fragment loads need no division and can be computed once instead of per K-tile.
+    for kt0 = 0 : STAGES : NUM_K_TILES - 1
+        @loopinfo unroll for s = 1 : STAGES
+            kt = kt0 + s - 1
+            if kt < NUM_K_TILES
+                stage = s
 
-        # (3.3) Calculate a compute_warp.M x compute_warp.N tile of D, one compute_op_shape.K
-        #       step at a time
-        @loopinfo unroll for (step, warp_k) = enumerate(0 : conf.compute_op_shape.K : block_tile.size.K - 1)
-            cur_buf = mod1(step, 2)
-            nxt_buf = mod1(step + 1, 2)
+                # (3.3) Calculate a compute_warp.M x compute_warp.N tile of D, one compute_op_shape.K
+                #       step at a time
+                @loopinfo unroll for (step, warp_k) = enumerate(0 : conf.compute_op_shape.K : block_tile.size.K - 1)
+                    cur_buf = mod1(step, 2)
+                    nxt_buf = mod1(step + 1, 2)
 
-            if step < block_tile.size.K ÷ conf.compute_op_shape.K
-                # the fragments of the next step of this K-tile
-                a_frags, b_frags = load_frags(a_frags, b_frags, nxt_buf, stage, warp_k + conf.compute_op_shape.K)
-            elseif kt + 1 < NUM_K_TILES
-                # The last step: move on to K-tile kt + 1. Before this point, STAGES + kt
-                # groups were committed, and K-tile kt + 1 is in group kt + 1, so it has
-                # arrived once at most STAGES - 2 groups are still pending. The barrier makes
-                # the copies of all threads visible, and guarantees that every warp has loaded
-                # all its fragments of K-tile kt, whose buffer is refilled below.
-                Layout.cp_async_wait(Val(STAGES - 2))
-                sync_threads()
+                    if step < block_tile.size.K ÷ conf.compute_op_shape.K
+                        # the fragments of the next step of this K-tile
+                        a_frags, b_frags = load_frags(a_frags, b_frags, nxt_buf, stage, warp_k + conf.compute_op_shape.K)
+                    elseif kt + 1 < NUM_K_TILES
+                        # The last step: move on to K-tile kt + 1. Before this point, STAGES + kt
+                        # groups were committed, and K-tile kt + 1 is in group kt + 1, so it has
+                        # arrived once at most STAGES - 2 groups are still pending. The barrier makes
+                        # the copies of all threads visible, and guarantees that every warp has loaded
+                        # all its fragments of K-tile kt, whose buffer is refilled below.
+                        Layout.cp_async_wait(Val(STAGES - 2))
+                        sync_threads()
 
-                kt_next = kt + STAGES
-                if kt_next < NUM_K_TILES
-                    copy_tile(kt_next, kt_next % STAGES + 1)
-                end
-                Layout.cp_async_commit()
+                        kt_next = kt + STAGES
+                        if kt_next < NUM_K_TILES
+                            copy_tile(kt_next, s)
+                        end
+                        Layout.cp_async_commit()
 
-                a_frags, b_frags = load_frags(a_frags, b_frags, nxt_buf, (kt + 1) % STAGES + 1, 0)
-            end
+                        a_frags, b_frags = load_frags(a_frags, b_frags, nxt_buf, mod1(s + 1, STAGES), 0)
+                    end
 
-            # (3.3.3) Compute a compute_warp.M x compute_warp.N x compute_op_shape.K matrix
-            #         product within one warp
-            @loopinfo unroll for i = 1 : num_fragments_m
-                @loopinfo unroll for j = 1 : num_fragments_n
-                    @inbounds @immutable c_frags[i, j] = Operator.mma(conf.operator, a_frags[cur_buf, i], b_frags[cur_buf, j], c_frags[i, j])
+                    # (3.3.3) Compute a compute_warp.M x compute_warp.N x compute_op_shape.K matrix
+                    #         product within one warp
+                    @loopinfo unroll for i = 1 : num_fragments_m
+                        @loopinfo unroll for j = 1 : num_fragments_n
+                            @inbounds @immutable c_frags[i, j] = Operator.mma(conf.operator, a_frags[cur_buf, i], b_frags[cur_buf, j], c_frags[i, j])
+                        end
+                    end
                 end
             end
         end
