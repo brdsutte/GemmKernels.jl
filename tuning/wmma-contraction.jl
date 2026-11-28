@@ -256,6 +256,7 @@ function repr_row(row)
     print(io, ", $(row.kernel_str) kernel")
     hasproperty(row, :SPLIT_K) && row.SPLIT_K != 1 && print(io, ", split-K $(row.SPLIT_K)")
     hasproperty(row, :INDEXING) && row.INDEXING != "default" && print(io, ", $(row.INDEXING) indexing")
+    hasproperty(row, :EDGE) && row.EDGE != "pad" && print(io, ", $(row.EDGE) edge")
     print(io, ")")
 
     return String(take!(io))
@@ -283,10 +284,13 @@ function create_params(row)
     # the address arithmetic of the GETT layouts (see INDEXING_VALUES); configurations from
     # before that dimension have no INDEXING column
     INDEXING = hasproperty(row, :INDEXING) ? row.INDEXING : "default"
+    # partial edge tiles instead of padding M and N (see GETTLayout.GETTLayoutMasked); not
+    # tuned yet, so configurations have no EDGE column
+    EDGE = hasproperty(row, :EDGE) ? row.EDGE : "pad"
 
     (; BLOCK_M, BLOCK_N, BLOCK_K, WARPS_M, WARPS_N, OP_M, OP_N, OP_K, kernel,
        is_A_col_major, is_B_col_major, is_D_col_major, PERM_M, PERM_N, PERM_K, cta_swizzle, SPLIT_K,
-       INDEXING)
+       INDEXING, EDGE)
 end
 
 function kernel_string_to_function(str)
