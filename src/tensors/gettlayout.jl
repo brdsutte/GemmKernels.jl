@@ -235,11 +235,12 @@ end
 # `(G ÷ divisor) % extent * stride`, in signed 64-bit arithmetic. The GPU has no 64-bit
 # multiply, so each division or modulo by a constant takes several instructions, and in
 # kernels like TCCG TC22 they make up most of the main loop. These layouts compute the same
-# offsets with unsigned arithmetic (UInt64, or UInt32 when the tensor has fewer than 2^31
-# elements) and without the modulo of the last mode of each dimension, which is redundant:
-# G is smaller than the product of the extents, so the last quotient is smaller than its
-# extent. The original layouts stay the default, as the generated code is sensitive to such
-# changes: whether this is faster is left to the tuner.
+# offsets in unsigned 32-bit arithmetic (for tensors with fewer than 2^31 elements) and without
+# the modulo of the last mode of each dimension, which is redundant: G is smaller than the
+# product of the extents, so the last quotient is smaller than its extent. The original layouts
+# stay the default, as the generated code is sensitive to such changes: on an RTX 6000 Ada,
+# these made 8 of 9 TCCG contractions 2-27% faster but one 7% slower, so the tuner chooses.
+# (Unsigned 64-bit arithmetic was tried too: it was erratic, up to 25x slower.)
 abstract type GETTLayoutLeanColMajor{T, IT, divT1, modT1, strides1, divT2, modT2, strides2,
                                      isLoadOrStoreStrided, strideOverExtent
                                     } <: Layout.UnsafeAlignedColMajor{T} end
@@ -329,9 +330,8 @@ Base.@propagate_inbounds @inline Layout.tile_pointer(
 
 # The address arithmetic of the GETT layouts (see GETTLayoutLean):
 #   :default   the original layouts
-#   :lean64    unsigned 64-bit, without the redundant modulos
 #   :lean32    unsigned 32-bit, without the redundant modulos (tensors < 2^31 elements)
-const GETT_INDEXING = (:default, :lean64, :lean32)
+const GETT_INDEXING = (:default, :lean32)
 
 function createGETTLayout(
     DT::DataType,
@@ -360,7 +360,7 @@ function createGETTLayout(
     else
         indexing in GETT_INDEXING ||
             throw(ArgumentError("indexing must be one of $(GETT_INDEXING), but is :$indexing"))
-        IT = indexing == :lean32 ? UInt32 : UInt64
+        IT = UInt32
         if (isColMajor == true)
             GETTLayoutLeanColMajor{DT, IT, divT1, modT1, strides1, divT2, modT2, strides2,
                                    isLoadOrStoreStrided, strideOverExtent}

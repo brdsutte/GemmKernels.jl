@@ -23,7 +23,8 @@ end
 @testset "GETT indexing" begin
     @testcase "lean offsets equal the original ones" begin
         # (extents, (modes of the first dimension, modes of the second dimension))
-        # (UInt32 only where the tensor has fewer than 2^31 elements, as for indexing = :lean32)
+        # (the lean layouts are only used for tensors with fewer than 2^31 elements; UInt64
+        # checks the formula on the larger ones)
         layouts = [([5136, 5120], ([1], [2])),
                    ([72, 72, 72, 72], ([1, 3], [4, 2])),
                    ([72, 72, 72, 72, 72, 72], ([1, 3], [6, 5])),
@@ -48,11 +49,9 @@ end
         @test GETTLayout.createGETTLayout(args...) <: GETTLayout.GETTLayoutColMajor
         @test GETTLayout.createGETTLayout(args...; indexing = :default) ==
               GETTLayout.createGETTLayout(args...)
-        @test GETTLayout.createGETTLayout(args...; indexing = :lean64) <:
-              GETTLayout.GETTLayoutLeanColMajor{Float16, UInt64}
         @test GETTLayout.createGETTLayout(args...; indexing = :lean32) <:
               GETTLayout.GETTLayoutLeanColMajor{Float16, UInt32}
-        @test_throws ArgumentError GETTLayout.createGETTLayout(args...; indexing = :int16)
+        @test_throws ArgumentError GETTLayout.createGETTLayout(args...; indexing = :lean64)
     end
 
     if CUDA.functional()
@@ -63,7 +62,7 @@ end
         contractions = [("1.2-1.3-3.2", [256, 128, 192], [1], [2], [3], true, true),
                         ("1.2.3.4-1.5.3.6-2.6.4.5", [32, 16, 32, 16, 16, 16], [1, 3], [2, 4], [6, 5], true, false)]
         @testcase "$name, $kernel, indexing = $indexing" for (name, extents, PERM_M, PERM_N, PERM_K, a_col, b_col) in contractions,
-                                                               kernel in kernels, indexing in ["default", "lean64", "lean32"]
+                                                               kernel in kernels, indexing in ["default", "lean32"]
             problem = WMMATensorContraction(; name, extents, data_type = Float16, compute_type = Float16,
                                               accumulate_type = Float32, zero_c = true)
             data = allocate_data(problem)
