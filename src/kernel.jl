@@ -1010,6 +1010,20 @@ function (::MatmulPipelinedAsync{STAGES, true})(conf::GemmKernels.Config, a, b, 
                         end
                     end
                 end
+
+                # Every K-tile starts with buffer 1, and its last step loaded the next K-tile's
+                # first fragments into buffer mod1(STEPS + 1, 2): buffer 1 when a K-tile has an
+                # even number of steps, buffer 2 when it has an odd number, i.e. one step
+                # (BLOCK_K = OP_K). Then move them into buffer 1 (register moves the compiler
+                # can rename away), or that K-tile would compute with the previous one's.
+                if isodd(block_tile.size.K ÷ conf.compute_op_shape.K)
+                    @loopinfo unroll for i = 1 : num_fragments_m
+                        @inbounds @immutable a_frags[1, i] = a_frags[2, i]
+                    end
+                    @loopinfo unroll for j = 1 : num_fragments_n
+                        @inbounds @immutable b_frags[1, j] = b_frags[2, j]
+                    end
+                end
             end
         end
     end
