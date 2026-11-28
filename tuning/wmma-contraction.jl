@@ -161,15 +161,26 @@ end
 
 Base.length(it::ModelOrderIterator) = length(it.random)
 
-function Base.iterate(it::ModelOrderIterator, state = nothing)
-    if state === nothing
+# The model's order of a problem's configurations, computed once (tune.jl does so before the
+# problem's sweep starts, so that the workers starting up do not slow it down; it reports the
+# time, which compare-orders.jl adds to the model's runs)
+const MODEL_ORDERS = Dict{String, Any}()
+function model_order(problem)
+    get!(MODEL_ORDERS, problem.name) do
         gpu = model_gpu()
         t = @elapsed candidates = ModelOrder.ordered_candidates(
-            it.problem.name, [it.problem.extents...];
-            kernels = KERNEL_STRINGS, split_k_values = split_k_values(it.problem),
+            problem.name, [problem.extents...];
+            kernels = KERNEL_STRINGS, split_k_values = split_k_values(problem),
             indexing_values = INDEXING_VALUES, edge_values = EDGE_VALUES, swizzles = SWIZZLES,
             gpu, valid = c -> precheck_config(c; max_shmem = gpu.smem_per_block) === nothing)
-        @info "Cost model: $(length(candidates)) configurations of $(it.problem.name) in order, in $(round(t; digits = 1)) s"
+        @info "Cost model: $(length(candidates)) configurations of $(problem.name) in order, in $(round(t; digits = 1)) s"
+        (candidates, t)
+    end
+end
+
+function Base.iterate(it::ModelOrderIterator, state = nothing)
+    if state === nothing
+        candidates, _ = model_order(it.problem)
         state = (candidates, 1, 0, nothing)
     end
     candidates, i, n, rstate = state

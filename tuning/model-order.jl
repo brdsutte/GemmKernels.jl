@@ -310,7 +310,7 @@ function ordered_candidates(name, extents; kernels, split_k_values, indexing_val
     perms_N = collect(permutations_of(p.Nmodes))
     perms_K = collect(permutations_of(p.Kmodes))
 
-    candidates = Tuple{Float64, NamedTuple}[]
+    candidates = Tuple{Float64, Candidate}[]
     padded_cache = Dict{Tuple{Int, Int, Int, String}, Vector{Int}}()
 
     for BM in 2 .^ (3:9), BN in 2 .^ (3:9), BK in 2 .^ (3:7), WM in 2 .^ (0:3), WN in 2 .^ (0:3),
@@ -322,6 +322,11 @@ function ordered_candidates(name, extents; kernels, split_k_values, indexing_val
             pad_extents(p.extents, p.modes, edge == "partial" ? (M = 1, N = 1, K = BK) : (M = BM, N = BN, K = BK))
         end
         structure_valid(s, p, gpu, padded) || continue
+        # the extra check (the tuner's pre-check) does not depend on the layout or the swizzle,
+        # so one configuration per structure tells
+        valid === nothing ||
+            valid(to_config(p, Candidate(s, false, false, false, perms_M[1], perms_N[1], perms_K[1], swizzles[1]))) ||
+            continue
 
         # the layouts: estimate each, keep the best few
         best = Tuple{Float64, Tuple}[]
@@ -338,20 +343,29 @@ function ordered_candidates(name, extents; kernels, split_k_values, indexing_val
         for (t, (a_col, b_col, d_col, pM, pN, pK)) in Iterators.take(best, layouts_per_structure),
             sw in swizzles
 
-            config = (; name = p.name, extents = copy(p.extents),
-                        BLOCK_M = BM, BLOCK_N = BN, BLOCK_K = BK, WARPS_M = WM, WARPS_N = WN,
-                        OP_M = OPM, OP_N = OPN, OP_K = OPK, kernel_str = kernel, SPLIT_K = split_k,
-                        INDEXING = indexing, EDGE = edge,
-                        is_A_col_major = a_col, is_B_col_major = b_col, is_D_col_major = d_col,
-                        PERM_M = pM, PERM_N = pN, PERM_K = pK, cta_swizzle_str = sw)
-            valid === nothing || valid(config) || continue
-            push!(candidates, (t * swizzle_factor(sw), config))
+            push!(candidates, (t * swizzle_factor(sw), Candidate(s, a_col, b_col, d_col, pM, pN, pK, sw)))
         end
     end
 
-    ordered = diversify(candidates, limit)
+    ordered = [(t, to_config(p, c)) for (t, c) in diversify(candidates, limit)]
     with_estimates ? ordered : [c for (_, c) in ordered]
 end
+
+# a candidate while ordering (lighter than the tuner's NamedTuple, built only for the result)
+struct Candidate
+    s::Structure
+    a_col::Bool; b_col::Bool; d_col::Bool
+    pM::Vector{Int}; pN::Vector{Int}; pK::Vector{Int}
+    sw::String
+end
+
+to_config(p::Problem, c::Candidate) =
+    (; name = p.name, extents = copy(p.extents),
+       BLOCK_M = c.s.BM, BLOCK_N = c.s.BN, BLOCK_K = c.s.BK, WARPS_M = c.s.WM, WARPS_N = c.s.WN,
+       OP_M = c.s.OPM, OP_N = c.s.OPN, OP_K = c.s.OPK, kernel_str = c.s.kernel, SPLIT_K = c.s.split_k,
+       INDEXING = c.s.indexing, EDGE = c.s.edge,
+       is_A_col_major = c.a_col, is_B_col_major = c.b_col, is_D_col_major = c.d_col,
+       PERM_M = c.pM, PERM_N = c.pN, PERM_K = c.pK, cta_swizzle_str = c.sw)
 
 # Many candidates have equal or nearly equal estimates (e.g. they differ only in the number of
 # stages, a swizzle or a layout that the model cannot tell apart), and trying them one after
@@ -375,6 +389,9 @@ GROUPING in ("levels", "tile") || error("GK_MODEL_GROUP must be levels or tile, 
 block_of(c) = (c.BLOCK_M, c.BLOCK_N, c.BLOCK_K)
 group_of(c) = (c.BLOCK_M, c.BLOCK_N, c.BLOCK_K, c.WARPS_M, c.WARPS_N, c.OP_M, c.OP_N, c.OP_K)
 kernel_group_of(c) = (group_of(c)..., c.kernel_str)
+block_of(c::Candidate) = (c.s.BM, c.s.BN, c.s.BK)
+group_of(c::Candidate) = (c.s.BM, c.s.BN, c.s.BK, c.s.WM, c.s.WN, c.s.OPM, c.s.OPN, c.s.OPK)
+kernel_group_of(c::Candidate) = (group_of(c)..., c.s.kernel)
 
 function diversify(candidates, limit)
     sort!(candidates; by = first)

@@ -30,6 +30,16 @@ function curve(df)
     sort!(ok, :found_after)
     (ok.found_after, accumulate(min, ok.time))
 end
+# the time the cost model took to order the configurations, before the sweep's clock started
+# (" - cost model: N configurations in order, in T s" in the run's log): added to its curve
+function ordering_time(file)
+    log = replace(file, r"\.arrow$" => ".log")
+    isfile(log) || return 0.0
+    m = match(r"cost model: \d+ configurations in order, in ([\d.]+) s", read(log, String))
+    m === nothing ? 0.0 : parse(Float64, m[1])
+end
+shift(c, dt) = (c[1] .+ dt, c[2])
+
 best_at(c, t) = (i = searchsortedlast(c[1], t); i == 0 ? Inf : c[2][i])
 function time_to(c, target)
     i = findfirst(<=(target), c[2])
@@ -39,7 +49,8 @@ end
 rows = []
 for g in groupby(runs, :tc; sort = true)
     tc = g.tc[1]
-    curves = Dict((r.strategy, r.rep) => curve(DataFrame(Arrow.Table(r.file))) for r in eachrow(g))
+    curves = Dict((r.strategy, r.rep) => shift(curve(DataFrame(Arrow.Table(r.file))), ordering_time(r.file))
+                  for r in eachrow(g))
     best = minimum(minimum(c[2]; init = Inf) for c in values(curves))
     isfinite(best) || continue
     spent = Dict(k => maximum(c[1]; init = 0.0) for (k, c) in curves)

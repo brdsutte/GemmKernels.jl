@@ -822,6 +822,10 @@ function main()
     for (problem_idx, problem) in enumerate(problems)
         println("\nProcessing $problem [$problem_idx/$(length(problems))]...")
         configs = select_configs(all_configs, problem)
+        if STRATEGY == "model"
+            candidates, t_model = model_order(problem)
+            println(" - cost model: $(length(candidates)) configurations in order, in $(round(t_model; digits = 1)) s")
+        end
         sweep_start = time()
         sweep_start_date = now()
 
